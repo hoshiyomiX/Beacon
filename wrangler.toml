@@ -5,16 +5,16 @@ minify = true
 workers_dev = true
 
 routes = [
-  { pattern = "supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "ava.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "df.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "graph.instagram.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "zaintest.vuclip.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "support.zoom.us.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "cache.netflix.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "api24-normal.tiktokv.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "cf-vod.nimo.tv.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" },
-  { pattern = "space.byu.id.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "308d61c78cb17494013ba7b32dc344b1" }
+  { pattern = "hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "ava.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "df.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "graph.instagram.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "zaintest.vuclip.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "support.zoom.us.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "cache.netflix.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "api24-normal.tiktokv.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "cf-vod.nimo.tv.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "space.byu.id.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" }
 ]
 
 [[kv_namespaces]]
