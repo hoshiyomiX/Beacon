@@ -6,15 +6,15 @@ workers_dev = true
 
 routes = [
   { pattern = "hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "ava.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "df.game.naver.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "graph.instagram.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "zaintest.vuclip.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "support.zoom.us.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "cache.netflix.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "api24-normal.tiktokv.com.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "cf-vod.nimo.tv.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
-  { pattern = "space.byu.id.supjavmissavsextb.dpdns.org", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" }
+  { pattern = "ava.game.naver.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "df.game.naver.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "graph.instagram.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "zaintest.vuclip.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "support.zoom.us.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "cache.netflix.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "api24-normal.tiktokv.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "cf-vod.nimo.tv.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
+  { pattern = "space.byu.id.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" }
 ]
 
 [[kv_namespaces]]
