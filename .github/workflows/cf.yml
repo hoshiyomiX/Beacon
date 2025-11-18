@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - master
+      - Debug
     paths-ignore:
       - 'README.md'
       - 'LICENSE.md'
