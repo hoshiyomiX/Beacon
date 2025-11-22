@@ -58,13 +58,17 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
+        // Wait for initial data - reduced minimum requirement
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
 
-        if peeked_buffer.len() < (peek_buffer_len/2) {
-            return Err(Error::RustError("not enough buffer".to_string()));
+        // More lenient check - require at least 1 byte
+        if peeked_buffer.len() == 0 {
+            return Err(Error::RustError("no data received from client".to_string()));
         }
+
+        console_log!("received {} bytes for protocol detection", peeked_buffer.len());
 
         if self.is_vless(peeked_buffer) {
             console_log!("vless detected!");
@@ -79,24 +83,24 @@ impl<'a> ProxyStream<'a> {
             console_log!("vmess detected!");
             self.process_vmess().await
         } else {
-            Err(Error::RustError("protocol not implemented".to_string()))
+            Err(Error::RustError(format!("protocol not implemented, first byte: {}", peeked_buffer[0])))
         }
     }
 
     pub fn is_vless(&self, buffer: &[u8]) -> bool {
-        buffer[0] == 0
+        buffer.len() > 0 && buffer[0] == 0
     }
 
     fn is_shadowsocks(&self, buffer: &[u8]) -> bool {
-        match buffer[0] {
-            1 => { // IPv4
+        match buffer.get(0) {
+            Some(&1) => { // IPv4
                 if buffer.len() < 7 {
                     return false;
                 }
                 let remote_port = u16::from_be_bytes([buffer[5], buffer[6]]);
                 remote_port != 0
             }
-            3 => { // Domain name
+            Some(&3) => { // Domain name
                 if buffer.len() < 2 {
                     return false;
                 }
@@ -110,7 +114,7 @@ impl<'a> ProxyStream<'a> {
                 ]);
                 remote_port != 0
             }
-            4 => { // IPv6
+            Some(&4) => { // IPv6
                 if buffer.len() < 19 {
                     return false;
                 }
@@ -130,6 +134,8 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
+        console_log!("attempting connection to {}:{}", &addr, &port);
+        
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             console_log!("error connecting to {}:{} - {}", &addr, &port, e);
             Error::RustError(format!("TCP connection failed to {}:{} - {}", &addr, &port, e))
@@ -140,15 +146,15 @@ impl<'a> ProxyStream<'a> {
             Error::RustError(format!("Socket open failed to {}:{} - {}", &addr, &port, e))
         })?;
 
-        console_log!("connected to {}:{}", &addr, &port);
+        console_log!("successfully connected to {}:{}", &addr, &port);
 
         tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
             .map(|(a_to_b, b_to_a)| {
-                console_log!("copied data from {}:{}, up: {} and dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
+                console_log!("data transfer complete from {}:{}, up: {} and dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
-                console_log!("error copying data to {}:{} - {}", &addr, &port, e);
+                console_log!("error during data transfer to {}:{} - {}", &addr, &port, e);
                 Error::RustError(format!("Data copy failed to {}:{} - {}", &addr, &port, e))
             })?;
         Ok(())
