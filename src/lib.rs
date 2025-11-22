@@ -118,20 +118,26 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     }
 
     let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
-    if upgrade == "websocket".to_string() {
+    if upgrade == "websocket" {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         server.accept()?;
 
         wasm_bindgen_futures::spawn_local(async move {
-            let events = server.events().unwrap();
-            match ProxyStream::new(cx.data, &server, events).process().await {
-                Ok(_) => {
-                    console_log!("[tunnel]: connection closed successfully");
+            match server.events() {
+                Ok(events) => {
+                    match ProxyStream::new(cx.data, &server, events).process().await {
+                        Ok(_) => {
+                            console_log!("[tunnel]: connection completed successfully");
+                        }
+                        Err(e) => {
+                            console_log!("[tunnel]: error - {}", e);
+                            // Silently try to close, don't propagate errors
+                            let _ = server.close(Some(1011), Some(format!("Error: {}", e)));
+                        }
+                    }
                 }
                 Err(e) => {
-                    console_log!("[tunnel]: error - {}", e);
-                    // Close WebSocket with error status and message
-                    let _ = server.close(Some(1011), Some(format!("Error: {}", e)));
+                    console_log!("[tunnel]: failed to initialize - {}", e);
                 }
             }
         });
