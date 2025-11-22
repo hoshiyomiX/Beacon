@@ -2,18 +2,15 @@ use crate::config::Config;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 use bytes::{BufMut, BytesMut};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::time::timeout;
 use worker::*;
 
 static MAX_WEBSOCKET_SIZE: usize = 64 * 1024; // 64kb
 static MAX_BUFFER_SIZE: usize = 512 * 1024; // 512kb
-static INITIAL_READ_TIMEOUT_SECS: u64 = 10; // 10 seconds for initial data
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -31,39 +28,42 @@ impl<'a> ProxyStream<'a> {
         Self { config, ws, buffer, events }
     }
     
-    pub async fn fill_buffer_until(&mut self, n: usize, timeout_secs: u64) -> std::io::Result<()> {
+    pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
-        
-        let deadline = Duration::from_secs(timeout_secs);
-        let read_operation = async {
-            while self.buffer.len() < n {
-                match self.events.next().await {
-                    Some(Ok(WebsocketEvent::Message(msg))) => {
-                        if let Some(data) = msg.bytes() {
-                            self.buffer.put_slice(&data);
-                        }
-                    }
-                    Some(Ok(WebsocketEvent::Close(_))) => {
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
-                    }
-                    None => {
-                        break;
+
+        let mut message_count = 0;
+        const MAX_MESSAGES: usize = 100; // Prevent infinite loop
+
+        while self.buffer.len() < n && message_count < MAX_MESSAGES {
+            match self.events.next().await {
+                Some(Ok(WebsocketEvent::Message(msg))) => {
+                    if let Some(data) = msg.bytes() {
+                        self.buffer.put_slice(&data);
+                        message_count += 1;
                     }
                 }
+                Some(Ok(WebsocketEvent::Close(_))) => {
+                    console_log!("client closed connection during buffer fill");
+                    break;
+                }
+                Some(Err(e)) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                }
+                None => {
+                    console_log!("event stream ended");
+                    break;
+                }
             }
-            Ok(())
-        };
-
-        match timeout(deadline, read_operation).await {
-            Ok(result) => result,
-            Err(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("timeout waiting for {} bytes after {} seconds", n, timeout_secs)
-            )),
         }
+        
+        if message_count >= MAX_MESSAGES && self.buffer.len() < n {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("too many messages ({}) without reaching {} bytes", message_count, n)
+            ));
+        }
+        
+        Ok(())
     }
 
     pub fn peek_buffer(&self, n: usize) -> &[u8] {
@@ -74,9 +74,9 @@ impl<'a> ProxyStream<'a> {
     pub async fn process(&mut self) -> Result<()> {
         console_log!("starting protocol detection");
         
-        // Wait for initial data with timeout
+        // Wait for initial data
         let peek_buffer_len = 62;
-        if let Err(e) = self.fill_buffer_until(peek_buffer_len, INITIAL_READ_TIMEOUT_SECS).await {
+        if let Err(e) = self.fill_buffer_until(peek_buffer_len).await {
             return Err(Error::RustError(format!("failed to receive initial data: {}", e)));
         }
         
