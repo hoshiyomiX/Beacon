@@ -25,13 +25,7 @@ pin_project! {
 impl<'a> ProxyStream<'a> {
     pub fn new(config: Config, ws: &'a WebSocket, events: EventStream<'a>) -> Self {
         let buffer = BytesMut::with_capacity(MAX_BUFFER_SIZE);
-
-        Self {
-            config,
-            ws,
-            buffer,
-            events,
-        }
+        Self { config, ws, buffer, events }
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
@@ -137,12 +131,16 @@ impl<'a> ProxyStream<'a> {
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
-            Error::RustError(e.to_string())
+            console_log!("error connecting to {}:{} - {}", &addr, &port, e);
+            Error::RustError(format!("TCP connection failed to {}:{} - {}", &addr, &port, e))
         })?;
 
         remote_socket.opened().await.map_err(|e| {
-            Error::RustError(e.to_string())
+            console_log!("error opening socket to {}:{} - {}", &addr, &port, e);
+            Error::RustError(format!("Socket open failed to {}:{} - {}", &addr, &port, e))
         })?;
+
+        console_log!("connected to {}:{}", &addr, &port);
 
         tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
@@ -150,7 +148,8 @@ impl<'a> ProxyStream<'a> {
                 console_log!("copied data from {}:{}, up: {} and dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
-                Error::RustError(e.to_string())
+                console_log!("error copying data to {}:{} - {}", &addr, &port, e);
+                Error::RustError(format!("Data copy failed to {}:{} - {}", &addr, &port, e))
             })?;
         Ok(())
     }
@@ -188,12 +187,10 @@ impl<'a> AsyncRead for ProxyStream<'a> {
                         if data.len() > MAX_WEBSOCKET_SIZE {
                             return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "websocket buffer too long")))
                         }
-                        
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
                             console_log!("buffer full, applying backpressure");
                             return Poll::Pending;
                         }
-                        
                         this.buffer.put_slice(&data);
                     }
                 }
