@@ -131,8 +131,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                         }
                         Err(e) => {
                             console_log!("[tunnel]: error - {}", e);
-                            // Silently try to close, don't propagate errors
-                            let _ = server.close(Some(1011), Some(format!("Error: {}", e)));
+                            // Don't close WebSocket on error - connection is already broken
                         }
                     }
                 }
