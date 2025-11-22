@@ -35,17 +35,29 @@ impl <'a> ProxyStream<'a> {
 
             // send header
             self.write(&[0u8; 2]).await?;
+            
+            let mut last_error = None;
             for (target_addr, target_port) in addr_pool {
-                if let Err(e) = self.handle_tcp_outbound(target_addr, target_port).await {
-                    console_error!("error handling tcp: {}", e)
+                match self.handle_tcp_outbound(target_addr.clone(), target_port).await {
+                    Ok(_) => {
+                        console_log!("vless tcp connection successful");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        console_log!("failed to connect to {}:{} - {}", target_addr, target_port, e);
+                        last_error = Some(e);
+                    }
                 }
             }
-        } else {
-            if let Err(e) = self.handle_udp_outbound().await {
-                console_error!("error handling udp: {}", e)
+            
+            // If we get here, all connections failed
+            if let Some(e) = last_error {
+                return Err(e);
             }
+            
+            Err(Error::RustError("all vless tcp connections failed".to_string()))
+        } else {
+            self.handle_udp_outbound().await
         }
-
-        Ok(())
     }
 }
