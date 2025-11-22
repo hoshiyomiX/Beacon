@@ -93,7 +93,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             let mut res = req.send().await?;
             if res.status_code() == 200 {
                 proxy_kv_str = res.text().await?.to_string();
-                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?; // 24 hours
+                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?;
             } else {
                 return Err(Error::from(format!("error getting proxy kv: {}", res.status_code())));
             }
@@ -124,8 +124,15 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
 
         wasm_bindgen_futures::spawn_local(async move {
             let events = server.events().unwrap();
-            if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
-                console_log!("[tunnel]: {}", e);
+            match ProxyStream::new(cx.data, &server, events).process().await {
+                Ok(_) => {
+                    console_log!("[tunnel]: connection closed successfully");
+                }
+                Err(e) => {
+                    console_log!("[tunnel]: error - {}", e);
+                    // Close WebSocket with error status and message
+                    let _ = server.close(Some(1011), Some(format!("Error: {}", e)));
+                }
             }
         });
 
