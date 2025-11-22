@@ -78,6 +78,20 @@ async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
     get_response_from_url(cx.data.checker_page_url).await
 }
 
+fn is_benign_error(error_msg: &str) -> bool {
+    let benign_patterns = [
+        "not enough buffer",
+        "broken pipe",
+        "connection reset",
+        "Network connection lost",
+        "connection closed",
+        "unexpected end of file",
+    ];
+    
+    let error_lower = error_msg.to_lowercase();
+    benign_patterns.iter().any(|pattern| error_lower.contains(&pattern.to_lowercase()))
+}
+
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
     let mut proxyip = cx.param("proxyip").unwrap().to_string();
     if PROXYKV_PATTERN.is_match(&proxyip)  {
@@ -93,7 +107,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             let mut res = req.send().await?;
             if res.status_code() == 200 {
                 proxy_kv_str = res.text().await?.to_string();
-                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?;
+                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?; // 24 hours
             } else {
                 return Err(Error::from(format!("error getting proxy kv: {}", res.status_code())));
             }
@@ -126,12 +140,19 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             let events = server.events().unwrap();
             match ProxyStream::new(cx.data, &server, events).process().await {
                 Ok(_) => {
-                    console_log!("[tunnel]: connection closed successfully");
+                    // Suppress success logs to reduce noise
                 }
                 Err(e) => {
-                    console_log!("[tunnel]: error - {}", e);
-                    // Close WebSocket with error status and message
-                    let _ = server.close(Some(1011), Some(format!("Error: {}", e)));
+                    let error_msg = e.to_string();
+                    if is_benign_error(&error_msg) {
+                        // Suppress benign errors - don't log them
+                        // Just close the WebSocket silently
+                        let _ = server.close(Some(1000), None);
+                    } else {
+                        // Only log actual errors that need attention
+                        console_log!("[tunnel]: error - {}", error_msg);
+                        let _ = server.close(Some(1011), Some(format!("Error: {}", error_msg)));
+                    }
                 }
             }
         });
