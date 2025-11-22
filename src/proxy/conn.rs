@@ -2,15 +2,18 @@ use crate::config::Config;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use bytes::{BufMut, BytesMut};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::time::timeout;
 use worker::*;
 
 static MAX_WEBSOCKET_SIZE: usize = 64 * 1024; // 64kb
 static MAX_BUFFER_SIZE: usize = 512 * 1024; // 512kb
+static INITIAL_READ_TIMEOUT_SECS: u64 = 10; // 10 seconds for initial data
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -28,28 +31,39 @@ impl<'a> ProxyStream<'a> {
         Self { config, ws, buffer, events }
     }
     
-    pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
+    pub async fn fill_buffer_until(&mut self, n: usize, timeout_secs: u64) -> std::io::Result<()> {
         use futures_util::StreamExt;
-
-        while self.buffer.len() < n {
-            match self.events.next().await {
-                Some(Ok(WebsocketEvent::Message(msg))) => {
-                    if let Some(data) = msg.bytes() {
-                        self.buffer.put_slice(&data);
+        
+        let deadline = Duration::from_secs(timeout_secs);
+        let read_operation = async {
+            while self.buffer.len() < n {
+                match self.events.next().await {
+                    Some(Ok(WebsocketEvent::Message(msg))) => {
+                        if let Some(data) = msg.bytes() {
+                            self.buffer.put_slice(&data);
+                        }
+                    }
+                    Some(Ok(WebsocketEvent::Close(_))) => {
+                        break;
+                    }
+                    Some(Err(e)) => {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                    }
+                    None => {
+                        break;
                     }
                 }
-                Some(Ok(WebsocketEvent::Close(_))) => {
-                    break;
-                }
-                Some(Err(e)) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
-                }
-                None => {
-                    break;
-                }
             }
+            Ok(())
+        };
+
+        match timeout(deadline, read_operation).await {
+            Ok(result) => result,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("timeout waiting for {} bytes after {} seconds", n, timeout_secs)
+            )),
         }
-        Ok(())
     }
 
     pub fn peek_buffer(&self, n: usize) -> &[u8] {
@@ -58,13 +72,17 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
-        // Wait for initial data - reduced minimum requirement
+        console_log!("starting protocol detection");
+        
+        // Wait for initial data with timeout
         let peek_buffer_len = 62;
-        self.fill_buffer_until(peek_buffer_len).await?;
+        if let Err(e) = self.fill_buffer_until(peek_buffer_len, INITIAL_READ_TIMEOUT_SECS).await {
+            return Err(Error::RustError(format!("failed to receive initial data: {}", e)));
+        }
+        
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
 
-        // More lenient check - require at least 1 byte
-        if peeked_buffer.len() == 0 {
+        if peeked_buffer.is_empty() {
             return Err(Error::RustError("no data received from client".to_string()));
         }
 
@@ -83,16 +101,16 @@ impl<'a> ProxyStream<'a> {
             console_log!("vmess detected!");
             self.process_vmess().await
         } else {
-            Err(Error::RustError(format!("protocol not implemented, first byte: {}", peeked_buffer[0])))
+            Err(Error::RustError(format!("unknown protocol, first byte: 0x{:02x}", peeked_buffer[0])))
         }
     }
 
     pub fn is_vless(&self, buffer: &[u8]) -> bool {
-        buffer.len() > 0 && buffer[0] == 0
+        !buffer.is_empty() && buffer[0] == 0
     }
 
     fn is_shadowsocks(&self, buffer: &[u8]) -> bool {
-        match buffer.get(0) {
+        match buffer.first() {
             Some(&1) => { // IPv4
                 if buffer.len() < 7 {
                     return false;
@@ -130,7 +148,7 @@ impl<'a> ProxyStream<'a> {
     }
 
     fn is_vmess(&self, buffer: &[u8]) -> bool {
-        buffer.len() > 0 // fallback
+        !buffer.is_empty() // fallback
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
