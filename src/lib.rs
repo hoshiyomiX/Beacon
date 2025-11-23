@@ -123,25 +123,13 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         server.accept()?;
 
         wasm_bindgen_futures::spawn_local(async move {
-            match server.events() {
-                Ok(events) => {
-                    match ProxyStream::new(cx.data, &server, events).process().await {
-                        Ok(_) => {
-                            console_log!("[tunnel]: connection completed successfully");
-                        }
-                        Err(e) => {
-                            console_log!("[tunnel]: error - {}", e);
-                            // Don't close WebSocket on error - connection is already broken
-                        }
-                    }
-                }
-                Err(e) => {
-                    console_log!("[tunnel]: failed to initialize - {}", e);
-                }
+            if let Ok(events) = server.events() {
+                let _ = ProxyStream::new(cx.data, &server, events).process().await;
             }
+            drop(server);
         });
 
-        Response::from_websocket(client)
+        return Response::from_websocket(client);
     } else {
         Response::from_html("hi from wasm!")
     }
