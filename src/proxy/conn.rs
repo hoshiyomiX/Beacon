@@ -9,8 +9,9 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-static MAX_WEBSOCKET_SIZE: usize = 64 * 1024; // 64kb
-static MAX_BUFFER_SIZE: usize = 512 * 1024; // 512kb
+// Reduced buffer sizes for lower memory usage in Cloudflare Workers
+static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
+static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -141,7 +142,6 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
-        // Warning for potential HTTP services on standard ports
         if Self::is_http_port(port) {
             console_log!(
                 "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
@@ -153,7 +153,6 @@ impl<'a> ProxyStream<'a> {
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             let error_msg = e.to_string();
             
-            // Enhanced error handling for HTTP service detection
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
                     "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
