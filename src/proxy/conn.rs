@@ -26,6 +26,7 @@ pin_project! {
 impl<'a> ProxyStream<'a> {
     pub fn new(config: Config, ws: &'a WebSocket, events: EventStream<'a>) -> Self {
         let buffer = BytesMut::with_capacity(MAX_BUFFER_SIZE);
+
         Self {
             config,
             ws,
@@ -42,18 +43,17 @@ impl<'a> ProxyStream<'a> {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
                     if let Some(data) = msg.bytes() {
                         self.buffer.put_slice(&data);
-                        if self.buffer.len() >= n {
-                            // Immediately process and clear to minimize memory
-                            // For example, parse then clear
-                            self.buffer.clear();
-                        }
                     }
                 }
-                Some(Ok(WebsocketEvent::Close(_))) => { break; }
+                Some(Ok(WebsocketEvent::Close(_))) => {
+                    break;
+                }
                 Some(Err(e)) => {
                     return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
-                None => { break; }
+                None => {
+                    break;
+                }
             }
         }
         Ok(())
@@ -96,22 +96,31 @@ impl<'a> ProxyStream<'a> {
 
     fn is_shadowsocks(&self, buffer: &[u8]) -> bool {
         match buffer[0] {
-            1 => {
-                if buffer.len() < 7 { return false; }
+            1 => { // IPv4
+                if buffer.len() < 7 {
+                    return false;
+                }
                 let remote_port = u16::from_be_bytes([buffer[5], buffer[6]]);
                 remote_port != 0
             }
-            3 => {
-                if buffer.len() < 2 { return false; }
+            3 => { // Domain name
+                if buffer.len() < 2 {
+                    return false;
+                }
                 let domain_len = buffer[1] as usize;
-                if buffer.len() < 2 + domain_len + 2 { return false; }
+                if buffer.len() < 2 + domain_len + 2 {
+                    return false;
+                }
                 let remote_port = u16::from_be_bytes([
-                    buffer[2 + domain_len], buffer[2 + domain_len + 1]
+                    buffer[2 + domain_len],
+                    buffer[2 + domain_len + 1],
                 ]);
                 remote_port != 0
             }
-            4 => {
-                if buffer.len() < 19 { return false; }
+            4 => { // IPv6
+                if buffer.len() < 19 {
+                    return false;
+                }
                 let remote_port = u16::from_be_bytes([buffer[17], buffer[18]]);
                 remote_port != 0
             }
@@ -124,9 +133,10 @@ impl<'a> ProxyStream<'a> {
     }
 
     fn is_vmess(&self, buffer: &[u8]) -> bool {
-        buffer.len() > 0
+        buffer.len() > 0 // fallback
     }
 
+    /// Check if the target port is commonly used for HTTP services
     fn is_http_port(port: u16) -> bool {
         port == 80 || port == 443 || port == 8080 || port == 8443
     }
@@ -134,19 +144,26 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         if Self::is_http_port(port) {
             console_log!(
-                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. If connection fails, the target may be an HTTP service.",
+                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
+                If connection fails, the target may be an HTTP service.",
                 &addr, port
             );
         }
+
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             let error_msg = e.to_string();
+            
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
-                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. TCP sockets cannot be used for HTTP services on ports 80/443. Target should be a raw TCP proxy service, not an HTTP endpoint.",
+                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
+                    TCP sockets cannot be used for HTTP services on ports 80/443. \
+                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
                     &addr, port
                 );
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), not HTTP/HTTPS.",
+                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \
+                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \
+                    not HTTP/HTTPS.",
                     &addr, port
                 ))
             } else {
@@ -158,9 +175,11 @@ impl<'a> ProxyStream<'a> {
         remote_socket.opened().await.map_err(|e| {
             let error_msg = e.to_string();
             console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
+            
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. Please verify your proxy configuration points to a raw TCP service.",
+                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
+                    Please verify your proxy configuration points to a raw TCP service.",
                     &addr, port
                 ))
             } else {
@@ -173,24 +192,24 @@ impl<'a> ProxyStream<'a> {
         tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
             .map(|(a_to_b, b_to_a)| {
-                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
+                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
+                    &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
                 console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, e);
                 Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, e.to_string()))
             })?;
-        // Release buffer ASAP after completion
-        self.buffer.clear();
         Ok(())
     }
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
         let mut buff = vec![0u8; 65535];
+
         let n = self.read(&mut buff).await?;
         let data = &buff[..n];
         if crate::dns::doh(data).await.is_ok() {
             self.write(&data).await?;
-        }
+        };
         Ok(())
     }
 }
@@ -202,27 +221,27 @@ impl<'a> AsyncRead for ProxyStream<'a> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<tokio::io::Result<()>> {
         let mut this = self.project();
+
         loop {
             let size = std::cmp::min(this.buffer.len(), buf.remaining());
             if size > 0 {
                 buf.put_slice(&this.buffer.split_to(size));
-                // Clear consumed buffer chunk
-                this.buffer.clear();
                 return Poll::Ready(Ok(()));
             }
+
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
                     if let Some(data) = msg.bytes() {
                         if data.len() > MAX_WEBSOCKET_SIZE {
                             return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "websocket buffer too long")))
                         }
+                        
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
                             console_log!("buffer full, applying backpressure");
                             return Poll::Pending;
                         }
+                        
                         this.buffer.put_slice(&data);
-                        // Release memory promptly
-                        this.buffer.clear();
                     }
                 }
                 Poll::Pending => return Poll::Pending,
@@ -238,13 +257,25 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
         _: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<tokio::io::Result<usize>> {
-        Poll::Ready(self.ws.send_with_bytes(buf).map(|_| buf.len()).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
+        return Poll::Ready(
+            self.ws
+                .send_with_bytes(buf)
+                .map(|_| buf.len())
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+        );
     }
-    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> { Poll::Ready(Ok(())) }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> {
         match self.ws.close(Some(1000), Some("shutdown".to_string())) {
             Ok(_) => Poll::Ready(Ok(())),
-            Err(e) => Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),)
+            Err(e) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))),
         }
     }
 }
