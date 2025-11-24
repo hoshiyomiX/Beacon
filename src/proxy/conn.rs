@@ -1,5 +1,5 @@
 use crate::config::Config;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use bytes::{BufMut, BytesMut};
@@ -9,10 +9,9 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
+// Reduced buffer sizes for lower memory usage in Cloudflare Workers
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
-const CONCURRENT_LIMIT: usize = 20; // Limit concurrent connections (adjustable)
-static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -38,6 +37,7 @@ impl<'a> ProxyStream<'a> {
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
+
         while self.buffer.len() < n {
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
@@ -65,24 +65,15 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
-        // Limit concurrent connections
-        let current = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::SeqCst);
-        if current >= CONCURRENT_LIMIT {
-            ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-            console_log!("[ERROR] Connection refused: too many concurrent connections ({}/{}).", current+1, CONCURRENT_LIMIT);
-            return Err(Error::RustError("Too many concurrent connections. Please try again later.".to_string()));
-        }
-
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
 
         if peeked_buffer.len() < (peek_buffer_len/2) {
-            ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
             return Err(Error::RustError("not enough buffer".to_string()));
         }
 
-        let result = if self.is_vless(peeked_buffer) {
+        if self.is_vless(peeked_buffer) {
             console_log!("vless detected!");
             self.process_vless().await
         } else if self.is_shadowsocks(peeked_buffer) {
@@ -96,10 +87,7 @@ impl<'a> ProxyStream<'a> {
             self.process_vmess().await
         } else {
             Err(Error::RustError("protocol not implemented".to_string()))
-        };
-
-        ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
-        result
+        }
     }
 
     pub fn is_vless(&self, buffer: &[u8]) -> bool {
@@ -161,8 +149,10 @@ impl<'a> ProxyStream<'a> {
                 &addr, port
             );
         }
+
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             let error_msg = e.to_string();
+            
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
                     "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
@@ -181,9 +171,11 @@ impl<'a> ProxyStream<'a> {
                 Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg))
             }
         })?;
+
         remote_socket.opened().await.map_err(|e| {
             let error_msg = e.to_string();
             console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
+            
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 Error::RustError(format!(
                     "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
@@ -194,11 +186,13 @@ impl<'a> ProxyStream<'a> {
                 Error::RustError(format!("Socket open failed for {}:{}: {}", &addr, port, error_msg))
             }
         })?;
+
         console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
+
         tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
             .map(|(a_to_b, b_to_a)| {
-                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}",
+                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
                     &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
@@ -210,6 +204,7 @@ impl<'a> ProxyStream<'a> {
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
         let mut buff = vec![0u8; 65535];
+
         let n = self.read(&mut buff).await?;
         let data = &buff[..n];
         if crate::dns::doh(data).await.is_ok() {
@@ -226,22 +221,26 @@ impl<'a> AsyncRead for ProxyStream<'a> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<tokio::io::Result<()>> {
         let mut this = self.project();
+
         loop {
             let size = std::cmp::min(this.buffer.len(), buf.remaining());
             if size > 0 {
                 buf.put_slice(&this.buffer.split_to(size));
                 return Poll::Ready(Ok(()));
             }
+
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
                     if let Some(data) = msg.bytes() {
                         if data.len() > MAX_WEBSOCKET_SIZE {
                             return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "websocket buffer too long")))
                         }
+                        
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
                             console_log!("buffer full, applying backpressure");
                             return Poll::Pending;
                         }
+                        
                         this.buffer.put_slice(&data);
                     }
                 }
@@ -265,9 +264,11 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
         );
     }
+
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> {
         match self.ws.close(Some(1000), Some("shutdown".to_string())) {
             Ok(_) => Poll::Ready(Ok(())),
