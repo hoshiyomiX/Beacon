@@ -9,6 +9,7 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
+// Reduced buffer sizes for lower memory usage in Cloudflare Workers
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
 
@@ -36,18 +37,12 @@ impl<'a> ProxyStream<'a> {
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
-        // Process and flush immediately once buffer is full instead of accumulating
+
         while self.buffer.len() < n {
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
                     if let Some(data) = msg.bytes() {
-                        // Only add up to remaining capacity, then flush
-                        let to_copy = std::cmp::min(data.len(), MAX_BUFFER_SIZE - self.buffer.len());
-                        self.buffer.put_slice(&data[..to_copy]);
-                        // Efficient: if buffer is full, break to process
-                        if self.buffer.len() == MAX_BUFFER_SIZE {
-                            break;
-                        }
+                        self.buffer.put_slice(&data);
                     }
                 }
                 Some(Ok(WebsocketEvent::Close(_))) => {
@@ -194,21 +189,16 @@ impl<'a> ProxyStream<'a> {
 
         console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
 
-        // Efficient streaming: minimize buffering, transfer as soon as possible
-        let mut transfer_buf = [0u8; 8 * 1024]; // 8KB temp buffer for each direction
-        loop {
-            let read_len = match self.read(&mut transfer_buf).await {
-                Ok(n) if n > 0 => n,
-                _ => break, // socket closed or error
-            };
-            if let Err(e) = remote_socket.write_all(&transfer_buf[..read_len]).await {
-                console_log!("[ERROR] Write to remote failed {}:{}: {}", &addr, port, e);
-                break;
-            }
-        }
-        // Clean up buffer immediately
-        self.buffer.clear();
-
+        tokio::io::copy_bidirectional(self, &mut remote_socket)
+            .await
+            .map(|(a_to_b, b_to_a)| {
+                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
+                    &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
+            })
+            .map_err(|e| {
+                console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, e);
+                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, e.to_string()))
+            })?;
         Ok(())
     }
 
