@@ -43,6 +43,10 @@ impl<'a> ProxyStream<'a> {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
                     if let Some(data) = msg.bytes() {
                         self.buffer.put_slice(&data);
+                        // Release buffer immediately if it exceeds n after put_slice
+                        if self.buffer.len() >= n {
+                            self.buffer.clear(); // Release memory after processing the collected message/chunk
+                        }
                     }
                 }
                 Some(Ok(WebsocketEvent::Close(_))) => {
@@ -242,6 +246,8 @@ impl<'a> AsyncRead for ProxyStream<'a> {
                         }
                         
                         this.buffer.put_slice(&data);
+                        // Clear buffer after consuming message to release memory
+                        this.buffer.clear();
                     }
                 }
                 Poll::Pending => return Poll::Pending,
