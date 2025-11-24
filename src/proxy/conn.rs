@@ -135,22 +135,70 @@ impl<'a> ProxyStream<'a> {
         buffer.len() > 0 // fallback
     }
 
+    /// Check if the target port is commonly used for HTTP services
+    fn is_http_port(port: u16) -> bool {
+        port == 80 || port == 443 || port == 8080 || port == 8443
+    }
+
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
+        // Warning for potential HTTP services on standard ports
+        if Self::is_http_port(port) {
+            console_log!(
+                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
+                If connection fails, the target may be an HTTP service.",
+                &addr, port
+            );
+        }
+
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
-            Error::RustError(e.to_string())
+            let error_msg = e.to_string();
+            
+            // Enhanced error handling for HTTP service detection
+            if error_msg.contains("HTTP") || error_msg.contains("http") {
+                console_log!(
+                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
+                    TCP sockets cannot be used for HTTP services on ports 80/443. \
+                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
+                    &addr, port
+                );
+                Error::RustError(format!(
+                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \
+                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \
+                    not HTTP/HTTPS.",
+                    &addr, port
+                ))
+            } else {
+                console_log!("[ERROR] Connection failed to {}:{} - {}", &addr, port, error_msg);
+                Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg))
+            }
         })?;
 
         remote_socket.opened().await.map_err(|e| {
-            Error::RustError(e.to_string())
+            let error_msg = e.to_string();
+            console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
+            
+            if error_msg.contains("HTTP") || error_msg.contains("http") {
+                Error::RustError(format!(
+                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
+                    Please verify your proxy configuration points to a raw TCP service.",
+                    &addr, port
+                ))
+            } else {
+                Error::RustError(format!("Socket open failed for {}:{}: {}", &addr, port, error_msg))
+            }
         })?;
+
+        console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
 
         tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
             .map(|(a_to_b, b_to_a)| {
-                console_log!("copied data from {}:{}, up: {} and dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
+                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
+                    &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
-                Error::RustError(e.to_string())
+                console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, e);
+                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, e.to_string()))
             })?;
         Ok(())
     }
