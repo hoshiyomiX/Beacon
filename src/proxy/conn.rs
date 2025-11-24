@@ -2,15 +2,19 @@ use crate::config::Config;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use bytes::{BufMut, BytesMut};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::time::timeout;
 use worker::*;
 
 static MAX_WEBSOCKET_SIZE: usize = 64 * 1024; // 64kb
 static MAX_BUFFER_SIZE: usize = 512 * 1024; // 512kb
+static TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10); // 10s connection timeout
+static TCP_OPERATION_TIMEOUT: Duration = Duration::from_secs(30); // 30s operation timeout
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -136,23 +140,73 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
-        let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
-            Error::RustError(e.to_string())
-        })?;
+        console_log!("attempting TCP connection to {}:{}", &addr, &port);
+        
+        // Attempt connection with timeout to prevent worker hang
+        let socket_result = timeout(
+            TCP_CONNECT_TIMEOUT,
+            async {
+                Socket::builder().connect(&addr, port)
+            }
+        ).await;
 
-        remote_socket.opened().await.map_err(|e| {
-            Error::RustError(e.to_string())
-        })?;
+        let mut remote_socket = match socket_result {
+            Ok(Ok(socket)) => socket,
+            Ok(Err(e)) => {
+                console_error!("TCP connection failed to {}:{} - {}", &addr, &port, e);
+                return Err(Error::RustError(format!("connection failed: {}", e)));
+            }
+            Err(_) => {
+                console_error!("TCP connection timeout to {}:{}", &addr, &port);
+                return Err(Error::RustError("connection timeout".to_string()));
+            }
+        };
 
-        tokio::io::copy_bidirectional(self, &mut remote_socket)
-            .await
-            .map(|(a_to_b, b_to_a)| {
-                console_log!("copied data from {}:{}, up: {} and dl: {}", &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
-            })
-            .map_err(|e| {
-                Error::RustError(e.to_string())
-            })?;
-        Ok(())
+        // Wait for socket to open with timeout
+        let open_result = timeout(
+            TCP_CONNECT_TIMEOUT,
+            remote_socket.opened()
+        ).await;
+
+        match open_result {
+            Ok(Ok(_)) => {
+                console_log!("TCP connection established to {}:{}", &addr, &port);
+            }
+            Ok(Err(e)) => {
+                console_error!("TCP socket open failed to {}:{} - {}", &addr, &port, e);
+                return Err(Error::RustError(format!("socket open failed: {}", e)));
+            }
+            Err(_) => {
+                console_error!("TCP socket open timeout to {}:{}", &addr, &port);
+                return Err(Error::RustError("socket open timeout".to_string()));
+            }
+        }
+
+        // Perform bidirectional copy with timeout
+        let copy_result = timeout(
+            TCP_OPERATION_TIMEOUT,
+            tokio::io::copy_bidirectional(self, &mut remote_socket)
+        ).await;
+
+        match copy_result {
+            Ok(Ok((a_to_b, b_to_a))) => {
+                console_log!(
+                    "TCP transfer complete for {}:{} - up: {}, down: {}", 
+                    &addr, &port, 
+                    convert(a_to_b as f64), 
+                    convert(b_to_a as f64)
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                console_error!("TCP copy error for {}:{} - {}", &addr, &port, e);
+                Err(Error::RustError(format!("copy error: {}", e)))
+            }
+            Err(_) => {
+                console_error!("TCP operation timeout for {}:{}", &addr, &port);
+                Err(Error::RustError("operation timeout".to_string()))
+            }
+        }
     }
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
