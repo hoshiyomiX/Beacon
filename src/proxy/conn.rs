@@ -8,10 +8,13 @@ use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
+use wasm_bindgen_futures::spawn_local;
+use gloo_timers::future::TimeoutFuture;
 
 // Reduced buffer sizes for lower memory usage in Cloudflare Workers
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
+static KEEPALIVE_INTERVAL_MS: u32 = 30_000; // 30 seconds
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -33,6 +36,24 @@ impl<'a> ProxyStream<'a> {
             buffer,
             events,
         }
+    }
+    
+    /// Spawn a keep-alive task that sends ping messages periodically
+    pub fn spawn_keepalive(ws: &WebSocket) {
+        let ws_clone = ws.clone();
+        
+        spawn_local(async move {
+            loop {
+                TimeoutFuture::new(KEEPALIVE_INTERVAL_MS).await;
+                
+                // Send ping to keep connection alive
+                if let Err(e) = ws_clone.send_with_str("") {
+                    console_log!("[KEEPALIVE] Failed to send ping: {}", e);
+                    break;
+                }
+                console_log!("[KEEPALIVE] Ping sent");
+            }
+        });
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
@@ -65,6 +86,9 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
+        // Start keep-alive mechanism
+        Self::spawn_keepalive(self.ws);
+        
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
