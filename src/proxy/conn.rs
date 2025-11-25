@@ -63,7 +63,7 @@ impl<'a> ProxyStream<'a> {
         Ok(())
     }
 
-    pub fn peek_buffer(&self, n: usize) -> &[u8] {
+    pub fn peeked_buffer(&self, n: usize) -> &[u8] {
         let len = self.buffer.len().min(n);
         &self.buffer[..len]
     }
@@ -74,7 +74,7 @@ impl<'a> ProxyStream<'a> {
         // Optionally, respond to received ping:
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
-        let peeked_buffer = self.peek_buffer(peek_buffer_len);
+        let peeked_buffer = self.peeked_buffer(peek_buffer_len);
         if peeked_buffer.len() < (peek_buffer_len/2) {
             return Err(Error::RustError("not enough buffer".to_string()));
         }
