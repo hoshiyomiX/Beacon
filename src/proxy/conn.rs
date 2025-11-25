@@ -86,13 +86,13 @@ impl<'a> ProxyStream<'a> {
         if self.is_vless(peeked_buffer) {
             console_log!("vless detected!");
             self.process_vless().await
-        } else if self.is_shadowsocks(peek_buffer) {
+        } else if self.is_shadowsocks(peeked_buffer) {
             console_log!("shadowsocks detected!");
             self.process_shadowsocks().await
-        } else if self.is_trojan(peek_buffer) {
+        } else if self.is_trojan(peeked_buffer) {
             console_log!("trojan detected!");
             self.process_trojan().await
-        } else if self.is_vmess(peek_buffer) {
+        } else if self.is_vmess(peeked_buffer) {
             console_log!("vmess detected!");
             self.process_vmess().await
         } else {
