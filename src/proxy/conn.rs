@@ -203,7 +203,8 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
-        let mut buff = vec![0u8; 65535];
+        // Reduced buffer size for DNS to 4096 bytes for memory efficiency
+        let mut buff = vec![0u8; 4096];
 
         let n = self.read(&mut buff).await?;
         let data = &buff[..n];
@@ -278,4 +279,4 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
             ))),
         }
     }
-        }
+}
