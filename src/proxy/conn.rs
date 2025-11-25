@@ -20,6 +20,7 @@ pin_project! {
         pub buffer: BytesMut,
         #[pin]
         pub events: EventStream<'a>,
+        pub last_activity: std::time::Instant,
     }
 }
 
@@ -32,26 +33,53 @@ impl<'a> ProxyStream<'a> {
             ws,
             buffer,
             events,
+            last_activity: std::time::Instant::now(),
         }
+    }
+    
+    /// Send a ping to keep the connection alive
+    fn send_keepalive(&mut self) -> std::io::Result<()> {
+        // Cloudflare Workers doesn't expose ping() directly, so we send a small control frame
+        // by sending an empty binary message which acts as a heartbeat
+        self.ws.send_with_bytes(&[])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        self.last_activity = std::time::Instant::now();
+        Ok(())
+    }
+    
+    /// Check if we need to send a keepalive (every 30-45 seconds to stay under Cloudflare's limit)
+    fn should_send_keepalive(&self) -> bool {
+        self.last_activity.elapsed().as_secs() > 30
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
 
         while self.buffer.len() < n {
+            // Send keepalive if needed before waiting for data
+            if self.should_send_keepalive() {
+                self.send_keepalive()?;
+            }
+
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
+                    self.last_activity = std::time::Instant::now();
                     if let Some(data) = msg.bytes() {
-                        self.buffer.put_slice(&data);
+                        // Ignore empty messages (our keepalives)
+                        if data.len() > 0 {
+                            self.buffer.put_slice(&data);
+                        }
                     }
                 }
                 Some(Ok(WebsocketEvent::Close(_))) => {
+                    console_log!("[WS] Connection closed by peer");
                     break;
                 }
                 Some(Err(e)) => {
                     return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
                 None => {
+                    console_log!("[WS] Event stream ended");
                     break;
                 }
             }
@@ -224,6 +252,15 @@ impl<'a> AsyncRead for ProxyStream<'a> {
         let mut this = self.project();
 
         loop {
+            // Send keepalive if needed
+            if this.last_activity.elapsed().as_secs() > 30 {
+                if let Err(e) = this.ws.send_with_bytes(&[]) {
+                    console_log!("[WS] Keepalive send failed: {}", e);
+                } else {
+                    *this.last_activity = std::time::Instant::now();
+                }
+            }
+
             let size = std::cmp::min(this.buffer.len(), buf.remaining());
             if size > 0 {
                 buf.put_slice(&this.buffer.split_to(size));
@@ -232,9 +269,15 @@ impl<'a> AsyncRead for ProxyStream<'a> {
 
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
+                    *this.last_activity = std::time::Instant::now();
                     if let Some(data) = msg.bytes() {
                         if data.len() > MAX_WEBSOCKET_SIZE {
                             return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "websocket buffer too long")))
+                        }
+                        
+                        // Ignore empty messages (keepalives)
+                        if data.len() == 0 {
+                            continue;
                         }
                         
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
@@ -258,8 +301,11 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
         _: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<tokio::io::Result<usize>> {
+        let this = self.project();
+        *this.last_activity = std::time::Instant::now();
+        
         return Poll::Ready(
-            self.ws
+            this.ws
                 .send_with_bytes(buf)
                 .map(|_| buf.len())
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
