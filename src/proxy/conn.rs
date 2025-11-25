@@ -2,6 +2,7 @@ use crate::config::Config;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use bytes::{BufMut, BytesMut};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
@@ -13,6 +14,9 @@ use worker::*;
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
 
+// WebSocket keep-alive settings for Cloudflare (kills connections after 100s inactivity)
+static PING_INTERVAL_MS: u64 = 30_000; // Send ping every 30 seconds
+
 pin_project! {
     pub struct ProxyStream<'a> {
         pub config: Config,
@@ -20,6 +24,7 @@ pin_project! {
         pub buffer: BytesMut,
         #[pin]
         pub events: EventStream<'a>,
+        pub last_ping: u64,
     }
 }
 
@@ -32,13 +37,35 @@ impl<'a> ProxyStream<'a> {
             ws,
             buffer,
             events,
+            last_ping: 0,
         }
+    }
+    
+    /// Send ping to keep connection alive (Cloudflare requirement)
+    fn send_ping(&mut self) -> std::io::Result<()> {
+        self.ws.send(WebsocketEvent::Ping).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("ping failed: {}", e))
+        })
+    }
+    
+    /// Check if we need to send ping and send it
+    fn maybe_send_ping(&mut self) -> std::io::Result<()> {
+        let now = js_sys::Date::now() as u64;
+        if now - self.last_ping >= PING_INTERVAL_MS {
+            self.send_ping()?;
+            self.last_ping = now;
+            console_log!("[PING] Sent keep-alive ping at {}ms", now);
+        }
+        Ok(())
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
 
         while self.buffer.len() < n {
+            // Send ping if needed to keep connection alive
+            self.maybe_send_ping()?;
+            
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
                     if let Some(data) = msg.bytes() {
@@ -46,12 +73,26 @@ impl<'a> ProxyStream<'a> {
                     }
                 }
                 Some(Ok(WebsocketEvent::Close(_))) => {
+                    console_log!("[CLOSE] WebSocket closed by peer");
                     break;
+                }
+                Some(Ok(WebsocketEvent::Ping)) => {
+                    // Respond to ping with pong (Cloudflare requirement)
+                    console_log!("[PING] Received ping, sending pong");
+                    self.ws.send(WebsocketEvent::Pong).map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::Other, format!("pong failed: {}", e))
+                    })?;
+                }
+                Some(Ok(WebsocketEvent::Pong)) => {
+                    console_log!("[PONG] Received pong response");
+                    // Update last ping time when we receive pong
+                    self.last_ping = js_sys::Date::now() as u64;
                 }
                 Some(Err(e)) => {
                     return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
                 }
                 None => {
+                    console_log!("[CLOSE] Event stream ended");
                     break;
                 }
             }
@@ -65,6 +106,9 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
+        // Initialize last_ping timestamp
+        self.last_ping = js_sys::Date::now() as u64;
+        
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
@@ -224,6 +268,11 @@ impl<'a> AsyncRead for ProxyStream<'a> {
         let mut this = self.project();
 
         loop {
+            // Send ping if needed (non-blocking check)
+            if let Err(e) = this.maybe_send_ping() {
+                return Poll::Ready(Err(e));
+            }
+            
             let size = std::cmp::min(this.buffer.len(), buf.remaining());
             if size > 0 {
                 buf.put_slice(&this.buffer.split_to(size));
@@ -245,8 +294,32 @@ impl<'a> AsyncRead for ProxyStream<'a> {
                         this.buffer.put_slice(&data);
                     }
                 }
+                Poll::Ready(Some(Ok(WebsocketEvent::Ping))) => {
+                    // Respond to ping with pong immediately
+                    console_log!("[PING] Received ping in poll_read, sending pong");
+                    if let Err(e) = this.ws.send(WebsocketEvent::Pong) {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("pong failed: {}", e)
+                        )));
+                    }
+                }
+                Poll::Ready(Some(Ok(WebsocketEvent::Pong))) => {
+                    console_log!("[PONG] Received pong in poll_read");
+                    *this.last_ping = js_sys::Date::now() as u64;
+                }
+                Poll::Ready(Some(Ok(WebsocketEvent::Close(_)))) => {
+                    console_log!("[CLOSE] WebSocket closed in poll_read");
+                    return Poll::Ready(Ok(()));
+                }
                 Poll::Pending => return Poll::Pending,
-                _ => return Poll::Ready(Ok(())),
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string()
+                    )));
+                }
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
             }
         }
     }
