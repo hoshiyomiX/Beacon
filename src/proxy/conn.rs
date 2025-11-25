@@ -5,8 +5,6 @@ use bytes::{BufMut, BytesMut};
 use futures_util::{Stream, StreamExt};
 use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio::time::{interval, Duration, Instant};
 use worker::*;
 
 // Reduced buffer sizes for lower memory usage in Cloudflare Workers
@@ -21,7 +19,8 @@ pin_project! {
         pub buffer: BytesMut,
         #[pin]
         pub events: EventStream<'a>,
-        pub last_activity: Instant, // for timeout/idle detection
+        // Remove Instant since it's tied to tokio::time
+        pub last_activity: u64, // use unix timestamp seconds
     }
 }
 
@@ -33,7 +32,7 @@ impl<'a> ProxyStream<'a> {
             ws,
             buffer,
             events,
-            last_activity: Instant::now(),
+            last_activity: worker::Date::now().as_millis() as u64,
         }
     }
 
@@ -41,8 +40,12 @@ impl<'a> ProxyStream<'a> {
         while self.buffer.len() < n {
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
-                    self.last_activity = Instant::now();
+                    self.last_activity = worker::Date::now().as_millis() as u64;
                     if let Some(data) = msg.bytes() {
+                        // If message is string "__ping__" ignore
+                        if let Some(txt) = msg.text() {
+                            if txt == "__ping__" { continue; }
+                        }
                         self.buffer.put_slice(&data);
                     }
                 }
@@ -66,17 +69,9 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
-        // Start keepalive ping task
-        let mut ping_intv = interval(Duration::from_secs(PING_INTERVAL_SECS));
-        let ws = self.ws.clone();
-        tokio::spawn(async move {
-            loop {
-                ping_intv.tick().await;
-                // send text ping, empty or ping marker (avoid binary, custom marker)
-                let _ = ws.send_with_string("__ping__");
-            }
-        });
-        // ---End keepalive ping---
+        // No background spawn: handle ping inline during events loop
+        // Instead, require client to send a ping periodically (for keepalive)
+        // Optionally, respond to received ping:
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
@@ -134,7 +129,7 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         if Self::is_http_port(port) {
             console_log!(
-                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \\n                If connection fails, the target may be an HTTP service.",
+                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \n                If connection fails, the target may be an HTTP service.",
                 &addr, port
             );
         }
@@ -142,11 +137,11 @@ impl<'a> ProxyStream<'a> {
             let error_msg = e.to_string();
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
-                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \\n                    TCP sockets cannot be used for HTTP services on ports 80/443. \\n                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
+                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \n                    TCP sockets cannot be used for HTTP services on ports 80/443. \n                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
                     &addr, port
                 );
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \\n                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \\n                    not HTTP/HTTPS.",
+                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \n                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \n                    not HTTP/HTTPS.",
                     &addr, port
                 ))
             } else {
@@ -159,7 +154,7 @@ impl<'a> ProxyStream<'a> {
             console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \\n                    Please verify your proxy configuration points to a raw TCP service.",
+                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \n                    Please verify your proxy configuration points to a raw TCP service.",
                     &addr, port
                 ))
             } else {
@@ -167,7 +162,7 @@ impl<'a> ProxyStream<'a> {
             }
         })?;
         console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
-        tokio::io::copy_bidirectional(self, &mut remote_socket)
+        worker::tokio::io::copy_bidirectional(self, &mut remote_socket)
             .await
             .map(|(a_to_b, b_to_a)| {
                 console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}",
@@ -206,6 +201,10 @@ impl<'a> AsyncRead for ProxyStream<'a> {
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
                     if let Some(data) = msg.bytes() {
+                        // Ignore string ping frames
+                        if let Some(txt) = msg.text() {
+                            if txt == "__ping__" { continue; }
+                        }
                         if data.len() > MAX_WEBSOCKET_SIZE {
                             return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, "websocket buffer too long")))
                         }
