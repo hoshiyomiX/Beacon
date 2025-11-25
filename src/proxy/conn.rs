@@ -35,7 +35,13 @@ impl<'a> ProxyStream<'a> {
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
+        let mut ping_counter = 0;
         while self.buffer.len() < n {
+            // Manual ping to keep websocket alive each loop round
+            if ping_counter % 10 == 0 {
+                let _ = self.ws.send_with_string("__ping__");
+            }
+            ping_counter += 1;
             match self.events.next().await {
                 Some(Ok(WebsocketEvent::Message(msg))) => {
                     if let Some(txt) = msg.text() {
@@ -142,8 +148,7 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         if Self::is_http_port(port) {
             console_log!(
-                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
-                If connection fails, the target may be an HTTP service.",
+                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \\n                If connection fails, the target may be an HTTP service.",
                 &addr, port
             );
         }
@@ -151,15 +156,11 @@ impl<'a> ProxyStream<'a> {
             let error_msg = e.to_string();
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
-                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
-                    TCP sockets cannot be used for HTTP services on ports 80/443. \
-                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
+                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \\n                    TCP sockets cannot be used for HTTP services on ports 80/443. \\n                    Target should be a raw TCP proxy service, not an HTTP endpoint.",
                     &addr, port
                 );
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \
-                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \
-                    not HTTP/HTTPS.",
+                    "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \\n                    Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \\n                    not HTTP/HTTPS.",
                     &addr, port
                 ))
             } else {
@@ -172,8 +173,7 @@ impl<'a> ProxyStream<'a> {
             console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 Error::RustError(format!(
-                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
-                    Please verify your proxy configuration points to a raw TCP service.",
+                    "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \\n                    Please verify your proxy configuration points to a raw TCP service.",
                     &addr, port
                 ))
             } else {
