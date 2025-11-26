@@ -37,12 +37,17 @@ impl <'a> ProxyStream<'a> {
             self.write(&[0u8; 2]).await?;
             for (target_addr, target_port) in addr_pool {
                 if let Err(e) = self.handle_tcp_outbound(target_addr, target_port).await {
-                    console_error!("error handling tcp: {}", e)
+                    // Only log non-HTTP service errors to keep metrics clean
+                    let error_msg = e.to_string();
+                    if !error_msg.contains("HTTP service detected") {
+                        console_error!("TCP connection failed: {}", e);
+                    }
+                    // HTTP service errors are expected and handled silently
                 }
             }
         } else {
             if let Err(e) = self.handle_udp_outbound().await {
-                console_error!("error handling udp: {}", e)
+                console_error!("UDP handling failed: {}", e)
             }
         }
 
