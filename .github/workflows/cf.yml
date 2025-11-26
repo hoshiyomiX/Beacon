@@ -7,7 +7,6 @@ on:
     branches:
       - master
       - debug
-      - alpha
     paths-ignore:
       - 'README.md'
       - 'LICENSE.md'
@@ -23,7 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install wasm-bindgen-cli
-        run: cargo install -f wasm-bindgen-cli --version 0.2.104
+        run: cargo install -f wasm-bindgen-cli --version 0.2.92
 
       - name: Install worker-build
         run: cargo install -q worker-build --version 0.7.0
