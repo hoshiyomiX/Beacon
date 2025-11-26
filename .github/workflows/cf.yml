@@ -19,25 +19,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install wasm-bindgen-cli
-        run: cargo install -f wasm-bindgen-cli --version 0.2.100
+        run: cargo install -f wasm-bindgen-cli --version 0.2.92
 
       - name: Install worker-build
-        run: cargo install -q worker-build
-
-      - name: Poison the cache
-        run: |
-          # Run a build that is expected to fail to populate the cache
-          worker-build --release || true
-          # Find the incorrect wasm-bindgen binary in the cache
-          WASM_BINDGEN_CACHE_PATH=$(find ~/.cache/worker-build -type f -name "wasm-bindgen")
-          echo "Found wasm-bindgen at: $WASM_BINDGEN_CACHE_PATH"
-          # Overwrite the incorrect cached binary with the correct one
-          cp "$(which wasm-bindgen)" "$WASM_BINDGEN_CACHE_PATH"
+        run: cargo install -q worker-build --version 0.7.0
 
       - name: Build
         run: worker-build --release
@@ -49,3 +37,4 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '3.90.0'

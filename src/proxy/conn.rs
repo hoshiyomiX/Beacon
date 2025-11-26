@@ -8,9 +8,13 @@ use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
+use wasm_bindgen_futures::spawn_local;
+use gloo_timers::future::TimeoutFuture;
 
-static MAX_WEBSOCKET_SIZE: usize = 16 * 1024;
-static MAX_BUFFER_SIZE: usize = 128 * 1024; 
+// Reduced buffer sizes for lower memory usage in Cloudflare Workers
+static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
+static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
+static KEEPALIVE_INTERVAL_MS: u32 = 30_000; // 30 seconds
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -32,6 +36,24 @@ impl<'a> ProxyStream<'a> {
             buffer,
             events,
         }
+    }
+    
+    /// Spawn a keep-alive task that sends ping messages periodically
+    pub fn spawn_keepalive(ws: &WebSocket) {
+        let ws_clone = ws.clone();
+        
+        spawn_local(async move {
+            loop {
+                TimeoutFuture::new(KEEPALIVE_INTERVAL_MS).await;
+                
+                // Send ping to keep connection alive
+                if let Err(e) = ws_clone.send_with_str("") {
+                    console_log!("[KEEPALIVE] Failed to send ping: {}", e);
+                    break;
+                }
+                console_log!("[KEEPALIVE] Ping sent");
+            }
+        });
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
@@ -64,6 +86,9 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
+        // Start keep-alive mechanism
+        Self::spawn_keepalive(self.ws);
+        
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
@@ -141,7 +166,6 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
-        // Warning for potential HTTP services on standard ports
         if Self::is_http_port(port) {
             console_log!(
                 "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
@@ -153,7 +177,6 @@ impl<'a> ProxyStream<'a> {
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             let error_msg = e.to_string();
             
-            // Enhanced error handling for HTTP service detection
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
                     "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
@@ -197,14 +220,26 @@ impl<'a> ProxyStream<'a> {
                     &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
-                console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, e);
-                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, e.to_string()))
+                let error_msg = e.to_string();
+                
+                // Filter out benign errors from normal connection closures
+                if error_msg.contains("WritableStream has been closed") 
+                    || error_msg.contains("broken pipe") 
+                    || error_msg.contains("connection reset") 
+                    || error_msg.contains("Connection closed") {
+                    console_log!("[INFO] Connection to {}:{} closed", &addr, port);
+                } else {
+                    console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, error_msg);
+                }
+                
+                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg))
             })?;
         Ok(())
     }
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
-        let mut buff = vec![0u8; 65535];
+        // Reduced buffer size for DNS to 4096 bytes for memory efficiency
+        let mut buff = vec![0u8; 4096];
 
         let n = self.read(&mut buff).await?;
         let data = &buff[..n];
