@@ -220,8 +220,19 @@ impl<'a> ProxyStream<'a> {
                     &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
             })
             .map_err(|e| {
-                console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, e);
-                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, e.to_string()))
+                let error_msg = e.to_string();
+                
+                // Filter out benign errors from normal connection closures
+                if error_msg.contains("WritableStream has been closed") 
+                    || error_msg.contains("broken pipe") 
+                    || error_msg.contains("connection reset") 
+                    || error_msg.contains("Connection closed") {
+                    console_log!("[INFO] Connection to {}:{} closed", &addr, port);
+                } else {
+                    console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, error_msg);
+                }
+                
+                Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg))
             })?;
         Ok(())
     }
