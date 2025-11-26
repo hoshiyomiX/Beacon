@@ -43,6 +43,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         .on_async("/link", link)
         .on_async("/converter", converter)
         .on_async("/checker", checker)
+        .on_async("/udp/:target", udp_relay)
         .on_async("/:proxyip", tunnel)
         .on_async("/Geo-Project/:proxyip", tunnel)
         .run(req, env)
@@ -73,6 +74,49 @@ async fn converter(_: Request, cx: RouteContext<Config>) -> Result<Response> {
 
 async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
     get_response_from_url(cx.data.checker_page_url).await
+}
+
+async fn udp_relay(req: Request, cx: RouteContext<Config>) -> Result<Response> {
+    let target = cx.param("target").unwrap_or("").to_string();
+    
+    if target.is_empty() {
+        return Response::error("Target address required (format: host:port)", 400);
+    }
+
+    let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
+    if upgrade != "websocket" {
+        return Response::from_html(
+            &format!("<html><body><h1>UDP Relay Endpoint</h1><p>Target: {}</p><p>Connect via WebSocket to relay UDP traffic.</p></body></html>", target)
+        );
+    }
+
+    let WebSocketPair { server, client } = WebSocketPair::new()?;
+    server.accept()?;
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let events = match server.events() {
+            Ok(e) => e,
+            Err(e) => {
+                console_log!("[UDP-RELAY] Failed to get events: {}", e);
+                return;
+            }
+        };
+
+        let mut stream = ProxyStream::new(cx.data, &server, events);
+        
+        match udp_relay::UdpRelayHandler::new(&target) {
+            Ok(handler) => {
+                if let Err(e) = handler.process(&mut stream).await {
+                    console_log!("[UDP-RELAY] Error: {}", e);
+                }
+            }
+            Err(e) => {
+                console_log!("[UDP-RELAY] Invalid target: {}", e);
+            }
+        }
+    });
+
+    Response::from_websocket(client)
 }
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
