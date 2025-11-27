@@ -30,7 +30,8 @@ wasm-bindgen-futures = "0.4"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = true
 strip = true
 codegen-units = 1
+panic = "abort"
