@@ -137,9 +137,9 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             let events = server.events().unwrap();
             if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
                 let error_msg = e.to_string();
-                // Only log non-benign errors
+                // Silently drop benign errors - no logging needed
                 if !is_benign_error(&error_msg) {
-                    console_log!("[FATAL] Tunnel error: {}", error_msg);
+                    console_log!("[ERROR] {}", error_msg);
                 }
             }
         });
