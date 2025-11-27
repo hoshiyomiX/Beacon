@@ -13,6 +13,19 @@ use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use worker::*;
 
+/// Check if an error is benign (expected during normal operation)
+fn is_benign_error(error_msg: &str) -> bool {
+    let error_lower = error_msg.to_lowercase();
+    error_lower.contains("writablestream has been closed")
+        || error_lower.contains("broken pipe")
+        || error_lower.contains("connection reset")
+        || error_lower.contains("connection closed")
+        || error_lower.contains("network connection lost")
+        || error_lower.contains("stream closed")
+        || error_lower.contains("eof")
+        || error_lower.contains("connection aborted")
+        || error_lower.contains("transfer error")
+}
 
 impl <'a> ProxyStream<'a> {
     async fn aead_decrypt(&mut self) -> Result<Vec<u8>> {
@@ -160,17 +173,18 @@ impl <'a> ProxyStream<'a> {
 
             for (target_addr, target_port) in addr_pool {
                 if let Err(e) = self.handle_tcp_outbound(target_addr, target_port).await {
-                    // Only log non-HTTP service errors to keep metrics clean
                     let error_msg = e.to_string();
-                    if !error_msg.contains("HTTP service detected") {
-                        console_error!("TCP connection failed: {}", e);
+                    if !is_benign_error(&error_msg) && !error_msg.contains("HTTP service detected") {
+                        console_error!("[FATAL] TCP error: {}", error_msg);
                     }
-                    // HTTP service errors are expected and handled silently
                 }
             }
         } else {
             if let Err(e) = self.handle_udp_outbound().await {
-                console_error!("UDP handling failed: {}", e)
+                let error_msg = e.to_string();
+                if !is_benign_error(&error_msg) {
+                    console_error!("[FATAL] UDP error: {}", error_msg);
+                }
             }
         }
 
