@@ -14,6 +14,20 @@ use regex::Regex;
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
 
+/// Check if an error is benign (expected during normal operation)
+fn is_benign_error(error_msg: &str) -> bool {
+    let error_lower = error_msg.to_lowercase();
+    error_lower.contains("writablestream has been closed")
+        || error_lower.contains("broken pipe")
+        || error_lower.contains("connection reset")
+        || error_lower.contains("connection closed")
+        || error_lower.contains("network connection lost")
+        || error_lower.contains("stream closed")
+        || error_lower.contains("eof")
+        || error_lower.contains("connection aborted")
+        || error_lower.contains("transfer error")
+}
+
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
     let uuid = env
@@ -122,7 +136,11 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         wasm_bindgen_futures::spawn_local(async move {
             let events = server.events().unwrap();
             if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
-                console_log!("[tunnel]: {}", e);
+                let error_msg = e.to_string();
+                // Only log non-benign errors
+                if !is_benign_error(&error_msg) {
+                    console_log!("[FATAL] Tunnel error: {}", error_msg);
+                }
             }
         });
 
