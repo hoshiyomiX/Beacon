@@ -8,22 +8,6 @@
     <meta property="og:image:secure_url" content="https://raw.githubusercontent.com/jaka2m/mau/refs/heads/kepo/geo.png"/>
     <meta property="og:url" content="https://api-check.web.id/" />
     <meta property="og:type" content="website" />
-
-    <!-- Meta tags -->
-    <meta property="og:title" content="Stupid World" />
-    <meta property="og:description" content="Create your V2Ray account effortlessly and experience a secure, anonymous internet connection. Protect your privacy and enjoy unrestricted access to content from anywhere in the world." />
-    <meta property="og:image" content="https://raw.githubusercontent.com/jaka2m/mau/refs/heads/kepo/geo.png" />
-    <meta property="og:image:secure_url" content="https://raw.githubusercontent.com/jaka2m/mau/refs/heads/kepo/geo.png"/>
-    <meta property="og:url" content="https://api-check.web.id/" />
-    <meta property="og:type" content="website" />
-
-    <!-- Twitter Card Meta Tags -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="VLESS VMESS TROJAN SHADOESOCKS" />
-    <meta name="twitter:description" content="Create your V2Ray account effortlessly and experience a secure, anonymous internet connection. Protect your privacy and enjoy unrestricted access to content from anywhere in the world." />
-    <meta name="twitter:image" content="https://raw.githubusercontent.com/jaka2m/mau/refs/heads/kepo/geo.png" />
-    <meta property="twitter:image:secure_url" content="https://raw.githubusercontent.com/jaka2m/mau/refs/heads/kepo/geo.png"/>
-    <meta name="twitter:url" content="https://joss.checker-ip.xyz/" />
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1" name="viewport"/>
     
@@ -36,24 +20,24 @@
     
     <style>
         :root {
-            --color-bg: #050a18;
-            --color-bg-card: #0a1128;
-            --color-primary: #00ddff;
-            --color-secondary: #7700ff;
-            --color-accent: #ff00aa;
-            --color-text: #e0f7ff;
-            --color-text-dim: #8ba3b8;
-            --color-success: #00ffaa;
-            --color-error: #ff2266;
-            --color-input-bg: rgba(0, 221, 255, 0.05);
-            --color-input-border: rgba(0, 221, 255, 0.2);
-            --glow-primary: 0 0 10px rgba(0, 221, 255, 0.5), 0 0 20px rgba(0, 221, 255, 0.2);
-            --glow-secondary: 0 0 10px rgba(119, 0, 255, 0.5), 0 0 20px rgba(119, 0, 255, 0.2);
+            --color-bg: #1a0a0f;
+            --color-bg-card: #2d1215;
+            --color-primary: #ff1744;
+            --color-secondary: #f50057;
+            --color-accent: #ff5252;
+            --color-text: #ffe0e6;
+            --color-text-dim: #d4a5ad;
+            --color-success: #00e676;
+            --color-error: #ff1744;
+            --color-input-bg: rgba(255, 23, 68, 0.08);
+            --color-input-border: rgba(255, 23, 68, 0.25);
+            --glow-primary: 0 0 15px rgba(255, 23, 68, 0.6), 0 0 30px rgba(255, 23, 68, 0.3);
+            --glow-secondary: 0 0 15px rgba(245, 0, 87, 0.6), 0 0 30px rgba(245, 0, 87, 0.3);
             --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
             --card-width: 100%;
             --card-max-width: 480px;
             --card-padding: 1.5rem;
-            --card-border-radius: 12px;
+            --card-border-radius: 16px;
         }
 
         * {
@@ -63,34 +47,41 @@
         }
 
         body {
-            font-family: monospace;
-            background: black;
-            color: #0f0;
+            font-family: 'Roboto', 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0d0406, #1a0a0f, #2d1215);
+            color: var(--color-text);
             text-align: center;
             background-size: cover;
             justify-content: center;
             align-items: center;
-            animation: rainbowBackground 10s infinite; 
+            min-height: 100vh;
+            position: relative;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at 20% 30%, rgba(255, 23, 68, 0.15) 0%, transparent 40%),
+                        radial-gradient(circle at 80% 70%, rgba(245, 0, 87, 0.15) 0%, transparent 40%);
+            z-index: -1;
         }
 
         h1 {
-            font-family: 'Rajdhani', sans-serif;
+            font-family: 'Roboto', sans-serif;
             padding-top: 10px;
             margin-top: 10px;
-            color: black;
+            color: var(--color-primary);
             text-align: center;
             font-size: 9vw;
-            font-weight: bold;
-            text-shadow: 
-                0 0 5px rgba(0, 123, 255, 0.8),
-                0 0 10px rgba(0, 123, 255, 0.8),
-                0 0 20px rgba(0, 123, 255, 0.8),
-                0 0 30px rgba(0, 123, 255, 0.8),
-                0 0 40px rgba(0, 123, 255, 0.8);
-            background: linear-gradient(45deg, var(--primary), var(--secondary), var(--dark));
+            font-weight: 700;
+            text-shadow: var(--glow-primary);
+            background: linear-gradient(45deg, var(--color-primary), var(--color-secondary), var(--color-accent));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            text-shadow: 0 0 30px #000;
             position: relative;
             animation: titlePulse 3s ease-in-out infinite;
         }
@@ -101,129 +92,37 @@
         }
     
         h2 {
-            color: black;
+            color: var(--color-primary);
             text-align: center;
             font-size: 4vw;
-            font-weight: bold;
-            text-shadow: 
-                0 0 5px rgba(0, 123, 255, 0.8),
-                0 0 10px rgba(0, 123, 255, 0.8),
-                0 0 20px rgba(0, 123, 255, 0.8),
-                0 0 30px rgba(0, 123, 255, 0.8),
-                0 0 40px rgba(0, 123, 255, 0.8);
+            font-weight: 700;
+            text-shadow: var(--glow-primary);
         }
         
-        header, footer {
-            box-sizing: border-box;
-            background-color: ;
-            color: white;
-            text-align: center;
-            border: 0px solid rgba(143, 0, 0, 0.89);
-            border-radius: 10px;
-            padding: 0 20px;
-            position: fixed;
-            width: 100%;
-            left: 0;
-            right: 2px;
-            pointer-events: none;
-            z-index: 10;
-        }
-
-        header {
-            top: 0;
-        }
-
-        footer {
-            bottom: 0;
-        }
-    
-        .swal-popup-extra-small-text {
-            font-size: 12px;
-        }
-
-        .swal-title-extra-small-text {
-            font-size: 12px;
-            font-weight: bold;
-        }
-
-        .swal-content-extra-small-text {
-            font-size: 12px;
-        }
-
-        .rainbow-text {
-            font-size: 15px;
-            font-weight: bold;
-            animation: rainbow 2s infinite;
-        }
-
-        /* Reset dasar */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        /* Animasi Loading */
-        .loading-text {
-            font-size: 18px;
-            color: #FF5722;
-            margin-left: 10px;
-            font-weight: bold;
-        }
-
-        #loading { 
-            display: none; 
-            font-size: 18px; 
-            font-weight: bold; 
-        }
-    
-        @keyframes moveColors {
-            100% {
-                background-position: -200%;
-            }
-            0% {
-                background-position: 200%;
-            }
-        }
-
-        #loading {
-            display: none; 
-            font-size: 20px; 
-            font-weight: bold;
-            background: linear-gradient(90deg, red, orange, yellow, green, blue, purple);
-            background-size: 200%;
-            color: transparent;
-            -webkit-background-clip: text;
-            animation: moveColors 5s linear infinite;
-        }
-  
         .container {
             width: 80%;
             max-width: 500px;
             margin: 50px auto;
-            background: rgba(0, 0, 0, 0.8);
+            background: rgba(45, 18, 21, 0.85);
             padding: 15px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px #0f0;
+            border-radius: var(--card-border-radius);
+            box-shadow: 0 8px 32px rgba(255, 23, 68, 0.3);
+            border: 1px solid rgba(255, 23, 68, 0.2);
         }
 
-        /* Responsif untuk layar kecil */
         @media (max-width: 768px) {
             .container {
                 width: 90%;
                 margin: 20px auto;
                 padding: 10px;
-                box-shadow: 0 0 8px #0f0;
             }
         }
 
-        /* Tampilan lebih lebar di laptop */
         @media (min-width: 1024px) {
             .container {
                 width: 90%;
                 max-width: 1200px;
                 padding: 20px;
-                box-shadow: 0 0 15px #0f0;
             }
         }
 
@@ -231,79 +130,33 @@
             width: 100%;
             overflow-x: auto;
             margin-bottom: 0px;
-            border: 1px solid #000;
-            border-radius: 10px;
+            border: 1px solid rgba(255, 23, 68, 0.3);
+            border-radius: 12px;
             padding: 0px;
-            background-color: rgba(0, 0, 0, 0.82);
-            box-shadow: 0 0 15px rgba(255, 255, 255, 0.6), 0 0 30px rgba(0, 150, 255, 0.5);
+            background-color: rgba(45, 18, 21, 0.9);
+            box-shadow: var(--glow-primary);
         }
         
-        .navbar {
-            position: fixed;
-            top: 50%;
-            left: -80px;
-            transform: translateY(-50%);
-            width: 80px;
-            background: ;
-            color: white;
-            padding: 10px 0;
-            transition: left 0.3s ease-in-out;
-            z-index: 1000;
-            border-radius: 0 10px 10px 0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 10px;
+        #loading { 
+            display: none; 
+            font-size: 18px; 
+            font-weight: bold; 
+        }
+    
+        @keyframes moveColors {
+            100% { background-position: -200%; }
+            0% { background-position: 200%; }
         }
 
-        /* Saat navbar terbuka */
-        .navbar.show {
-            left: 0;
-        }
-
-        .navbar a img {
-            width: 40px;
-        }
-        
-        .navbar a {
-            display: block;
-            color: white;
-            text-decoration: none;
-            padding: 10px 20px;
-        }
-        
-        .navbar a:hover {
-            background: ;
-        }
-        
-        /* Tombol Toggle */
-        .toggle-btn {
-            position: absolute;
-            top: 50%;
-            right: -30px;
-            transform: translateY(-50%);
-            background: ;
-            border: none;
-            cursor: pointer;
-            z-index: 1001;
-            padding: 10px;
-            border-radius: 0 10px 10px 0;
-            transition: right 0.3s ease-in-out;
-        }
-
-        .toggle-btn img {
-            width: 20px;
-            height: 150px;
-        }
-
-        /* Saat navbar terbuka, tombol ikut bergeser */
-        .navbar.show .toggle-btn {
-            right: -29px;
-        }
-        
-        @keyframes blink {
-            0% { opacity: 1; }
-            100% { opacity: 0.3; }
+        #loading {
+            display: none; 
+            font-size: 20px; 
+            font-weight: bold;
+            background: linear-gradient(90deg, #ff1744, #f50057, #ff5252, #ff4081);
+            background-size: 200%;
+            color: transparent;
+            -webkit-background-clip: text;
+            animation: moveColors 3s linear infinite;
         }
   
         .input-container {
@@ -312,30 +165,32 @@
 
         .input-container input {
             width: 100%;
-            padding: 10px;
-            border: 1px solid #9b4de0;
-            border-radius: 5px;
+            padding: 12px;
+            border: 2px solid var(--color-input-border);
+            border-radius: 12px;
             font-size: 16px;
             text-align: center;
-            background-color: rgba(155, 77, 224, 0.1);
-            color: #9b4de0;
+            background-color: var(--color-input-bg);
+            color: var(--color-text);
+            transition: var(--transition);
         }
 
         .input-container input:focus {
-            border-color: #9b4de0;
-            background-color: rgba(155, 77, 224, 0.2);
+            border-color: var(--color-primary);
+            background-color: rgba(255, 23, 68, 0.12);
+            outline: none;
+            box-shadow: var(--glow-primary);
         }
 
         #map {
             height: 350px;
             width: 100%;
             margin-top: 20px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            border: 2px solid rgba(255, 23, 68, 0.3);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
 
-        /* Canvas Matrix */
         canvas, #matrix {
             position: fixed;
             top: 0;
@@ -345,34 +200,33 @@
             z-index: -1;
         }
 
-        h2 {
-            margin-bottom: 15px;
-        }
-
-        /* Input dan tombol */
         input, button {
             width: 100%;
-            padding: 12px;
-            margin: 6px 0;
+            padding: 14px;
+            margin: 8px 0;
             font-size: 16px;
-            border-radius: 5px;
+            border-radius: 12px;
             border: none;
+            transition: var(--transition);
         }
 
         input {
-            background: #2d3748;
-            color: #00FF00;
+            background: var(--color-input-bg);
+            color: var(--color-text);
+            border: 2px solid var(--color-input-border);
         }
 
         button {
-            background: #0f0;
-            color: black;
-            font-weight: bold;
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            color: white;
+            font-weight: 600;
             cursor: pointer;
+            box-shadow: 0 4px 12px rgba(255, 23, 68, 0.4);
         }
 
         button:hover:enabled {
-            background: #0d0;
+            transform: translateY(-2px);
+            box-shadow: var(--glow-primary);
         }
 
         button:disabled {
@@ -380,86 +234,38 @@
             cursor: not-allowed;
         }
 
-        /* Tabel */
         .table-wrapper {
             width: 100%;
             overflow-x: auto;
             margin: 20px 0;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
+            border: 1px solid rgba(255, 23, 68, 0.25);
+            border-radius: 12px;
+            box-shadow: var(--glow-primary);
         }
 
         .result-table {
             width: auto;
             min-width: 100%;
             border-collapse: collapse;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 5px;
+            background: rgba(45, 18, 21, 0.7);
+            border-radius: 12px;
             overflow: hidden;
         }
 
         th, td {
             padding: 12px 15px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 23, 68, 0.2);
             text-align: left;
             white-space: nowrap;
         }
 
         th {
-            background: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 23, 68, 0.25);
+            font-weight: 600;
         }
 
         tr:nth-child(even) {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        /* Efek fade-in */
-        .fade-in {
-            opacity: 0;
-            transition: opacity 0.5s ease-in-out;
-        }
-
-        .fade-in.show {
-            opacity: 1;
-        }
-
-        /* Efek teks ala hacker */
-        .matrix-alert {
-            font-family: 'Courier New', monospace;
-            text-shadow: 0 0 5px #00FF00, 0 0 10px #00FF00;
-        }
-
-        .tech-detail {
-            position: absolute;
-            background: var(--color-primary);
-            opacity: 0.1;
-            z-index: -1;
-        }
-
-        .tech-detail-1 {
-            width: 40px;
-            height: 40px;
-            top: 20px;
-            right: 20px;
-            border-radius: 50%;
-            box-shadow: 0 0 20px var(--color-primary);
-        }
-
-        .tech-detail-2 {
-            width: 80px;
-            height: 2px;
-            bottom: 40px;
-            left: -20px;
-            transform: rotate(45deg);
-        }
-
-        .tech-detail-3 {
-            width: 15px;
-            height: 15px;
-            bottom: 20px;
-            right: 40px;
-            transform: rotate(45deg);
+            background: rgba(255, 23, 68, 0.08);
         }
 
         .nav-buttons {
@@ -472,32 +278,31 @@
         }
 
         .nav-button {
-            background: rgba(106, 17, 203, 0.4);
-            border: 1px solid rgba(106, 17, 203, 0.5);
-            color: var(--text-secondary);
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem; 
-            transition: all 0.3s ease;
+            background: rgba(255, 23, 68, 0.15);
+            border: 1px solid rgba(255, 23, 68, 0.3);
+            color: var(--color-text);
+            padding: 8px 16px;
+            border-radius: 24px;
+            font-size: 0.9rem;
+            transition: var(--transition);
             text-decoration: none;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
+            font-weight: 500;
         }
 
         .nav-button:hover {
-            background: rgba(106, 17, 203, 0.5);
-            color: var(--text-primary);
-            transform: translateY(-3px);
-            box-shadow: 0 0 15px rgba(106, 17, 203, 0.7);
-            border-color: rgba(106, 17, 203, 0.6);
+            background: rgba(255, 23, 68, 0.25);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 23, 68, 0.4);
         }
 
         .nav-button.active {
-            background: linear-gradient(90deg, #00ff00, #00cc33, #009900);
+            background: linear-gradient(90deg, var(--color-primary), var(--color-secondary));
             color: white;
             border: none;
-            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            box-shadow: var(--glow-primary);
         }
 
         .title-container {
@@ -507,36 +312,17 @@
         }
 
         .subtitle {
-            font-size: 24px;
-            font-family: 'Courier New', monospace;
-            white-space: nowrap;
-            overflow: hidden;
-            border-right: 4px solid #0f0;
-            animation: typing 4s steps(30) infinite, blink 0.75s step-end infinite;
-        }
-
-        /* Animasi mengetik */
-        @keyframes typing {
-            from {
-                width: 0;
-            }
-            to {
-                width: 100%;
-            }
-        }
-
-        /* Animasi kursor berkedip */
-        @keyframes blink {
-            50% {
-                border-color: transparent;
-            }
+            font-size: 1.1rem;
+            color: var(--color-text-dim);
+            margin-top: 0.5rem;
+            font-weight: 400;
         }
         
         .title {
-            font-family: 'Orbitron', sans-serif;
+            font-family: 'Roboto', sans-serif;
             font-weight: 700;
-            font-size: 1.8rem;
-            letter-spacing: 1px;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
             margin: 0;
             background: linear-gradient(90deg, var(--color-primary), var(--color-secondary));
             -webkit-background-clip: text;
@@ -550,89 +336,46 @@
             content: "CHECKER";
             position: absolute;
             top: -8px;
-            right: -30px;
+            right: -40px;
             font-size: 0.7rem;
-            font-weight: 400;
+            font-weight: 600;
             background: var(--color-accent);
-            color: var(--color-bg);
-            padding: 2px 5px;
-            border-radius: 3px;
-            -webkit-text-fill-color: var(--color-bg);
-            transform: rotate(15deg);
+            color: white;
+            padding: 3px 8px;
+            border-radius: 6px;
+            -webkit-text-fill-color: white;
+            transform: rotate(12deg);
         }
 
-        .title {
-            font-size: 1.5rem;
-        }
-        
-        .subtitle {
-            font-size: 0.8rem;
-        }
-        
         .geo-btn {
-            background: rgba(106, 17, 203, 0.4);
-            border: 1px solid rgba(106, 17, 203, 0.5);
-            color: var(--text-secondary);
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem; 
-            transition: all 0.3s ease;
+            background: rgba(255, 23, 68, 0.15);
+            border: 1px solid rgba(255, 23, 68, 0.3);
+            color: var(--color-text);
+            padding: 8px 16px;
+            border-radius: 24px;
+            font-size: 0.9rem;
+            transition: var(--transition);
             text-decoration: none;
             display: flex;
             justify-content: center;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
+            font-weight: 500;
         }
 
         .geo-btn:hover {
-            background: rgba(106, 17, 203, 0.5);
-            color: var(--text-primary);
-            transform: translateY(-3px);
-            box-shadow: 0 0 15px rgba(106, 17, 203, 0.7);
-            border-color: rgba(106, 17, 203, 0.6);
+            background: rgba(255, 23, 68, 0.25);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 23, 68, 0.4);
         }
 
         .geo-btn.active {
-            background: linear-gradient(90deg, #00ff00, #00cc33, #009900);
+            background: linear-gradient(90deg, var(--color-primary), var(--color-secondary));
             color: white;
             border: none;
-            box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+            box-shadow: var(--glow-primary);
         }
 
-        #map {
-            width: 100%;
-            height: 400px;
-        }
-
-        .form-container {
-            background-color: #444;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
-        }
-
-        .form-container textarea,
-        .form-container button {
-            width: 100%;
-            padding: 12px;
-            background-color: rgba(51, 51, 51, 0.8);
-            border: none;
-            border-radius: 5px;
-            color: white;
-            margin-bottom: 10px;
-            font-size: 16px;
-        }
-
-        .form-container button {
-            background-color: rgba(106, 90, 173, 0.9);
-        }
-
-        .error-message {
-            color: red;
-        }
-
-        /* Responsif untuk mobile */
         @media (max-width: 768px) {
             .form-container {
                 padding: 15px;
@@ -654,7 +397,6 @@
             }
         }
 
-        /* Untuk tampilan di mobile dan tablet */
         @media (max-width: 480px) {
             .form-container textarea,
             .form-container button {
@@ -678,10 +420,6 @@
 <div class="container">
     <div class="form-container">
         <div class="input-container">
-            <div class="tech-detail tech-detail-1"></div>
-            <div class="tech-detail tech-detail-2"></div>
-            <div class="tech-detail tech-detail-3"></div>
-
             <div class="title-container">
                 <h1 class="title">GEO - PROJECT</h1>
                 <p class="subtitle">Check Proxyip Cloudflare</p>
@@ -712,7 +450,6 @@
         <div id="loading">Loading...</div>
     </div>
 
-    <!-- Wrapper untuk tabel dengan scroll horizontal -->
     <div class="table-wrapper">
         <table class="result-table" id="resultTable">
             <thead>
@@ -725,7 +462,6 @@
                 </tr>
             </thead>
             <tbody id="resultBody">
-                <!-- Data akan ditambahkan di sini -->
             </tbody>
         </table>
     </div>
@@ -777,17 +513,16 @@ async function checkMultipleProxies() {
             title: 'Peringatan!',
             text: 'Masukkan IP:Port terlebih dahulu!',
             confirmButtonText: 'OK',
-            background: '#000',
-            color: '#00FF00',
-            iconColor: '#00FF00',
-            confirmButtonColor: '#4CAF50'
+            background: 'var(--color-bg-card)',
+            color: 'var(--color-text)',
+            iconColor: 'var(--color-primary)',
+            confirmButtonColor: 'var(--color-primary)'
         });
         return;
     }
 
     document.getElementById("loading").style.display = "block";
 
-    // Iterate through the list of IP:Port and fetch data for each
     for (let ipPort of ipPorts) {
         try {
             const apiUrl = `https://cors.geo-project.workers.dev/?url=https://api-check.web.id/check?ip=${encodeURIComponent(ipPort)}`;
@@ -805,19 +540,17 @@ async function checkMultipleProxies() {
                     title: 'Error!',
                     text: `Terjadi kesalahan saat mengambil data dari API: ${data.error}`,
                     confirmButtonText: 'OK',
-                    background: '#000',
-                    color: '#FF0000',
-                    iconColor: '#FF0000',
-                    confirmButtonColor: '#FF0000'
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-text)',
+                    iconColor: 'var(--color-error)',
+                    confirmButtonColor: 'var(--color-error)'
                 });
                 return;
             }
 
-            // Simpan data dan update tabel
             updateTable(data);
             localStorage.setItem("proxyData", JSON.stringify(data));
 
-            // Update the map with new marker
             if (data.latitude && data.longitude) {
                 updateMap(data.latitude, data.longitude, data);
             }
@@ -828,10 +561,10 @@ async function checkMultipleProxies() {
                 title: 'Error!',
                 text: 'Terjadi kesalahan saat mengambil data dari API.',
                 confirmButtonText: 'OK',
-                background: '#000',
-                color: '#FF0000',
-                iconColor: '#FF0000',
-                confirmButtonColor: '#FF0000'
+                background: 'var(--color-bg-card)',
+                color: 'var(--color-text)',
+                iconColor: 'var(--color-error)',
+                confirmButtonColor: 'var(--color-error)'
             });
         }
     }
@@ -896,14 +629,13 @@ function addMarkerToMap(lat, lon, data) {
 function updateTable(data) {
     const tbody = document.getElementById("resultBody");
 
-    // Tambahkan data IP baru ke tabel setiap kali
     const row = document.createElement('tr');
     row.innerHTML = `
     <td>${data.ip || '-'}</td>
     <td style="text-align: center;">
         ${data.status === "ACTIVE" 
-            ? '<i class="fas fa-check-circle" style="color: #00FF00; font-size: 24px;"></i>' 
-            : '<i class="fas fa-times-circle" style="color: red; font-size: 24px;"></i>'}
+            ? '<i class="fas fa-check-circle" style="color: var(--color-success); font-size: 24px;"></i>' 
+            : '<i class="fas fa-times-circle" style="color: var(--color-error); font-size: 24px;"></i>'}
     </td>
     <td>${data.port || '-'}</td>
     <td>${data.isp || '-'}</td>
