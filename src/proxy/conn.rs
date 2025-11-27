@@ -26,6 +26,19 @@ pin_project! {
     }
 }
 
+/// Check if an error is benign (expected during normal operation)
+fn is_benign_error(error_msg: &str) -> bool {
+    let error_lower = error_msg.to_lowercase();
+    error_lower.contains("writablestream has been closed")
+        || error_lower.contains("broken pipe")
+        || error_lower.contains("connection reset")
+        || error_lower.contains("connection closed")
+        || error_lower.contains("network connection lost")
+        || error_lower.contains("stream closed")
+        || error_lower.contains("eof")
+        || error_lower.contains("connection aborted")
+}
+
 impl<'a> ProxyStream<'a> {
     pub fn new(config: Config, ws: &'a WebSocket, events: EventStream<'a>) -> Self {
         let buffer = BytesMut::with_capacity(MAX_BUFFER_SIZE);
@@ -46,12 +59,14 @@ impl<'a> ProxyStream<'a> {
             loop {
                 TimeoutFuture::new(KEEPALIVE_INTERVAL_MS).await;
                 
-                // Send ping to keep connection alive
+                // Send ping to keep connection alive - suppress benign errors
                 if let Err(e) = ws_clone.send_with_str("") {
-                    console_log!("[KEEPALIVE] Failed to send ping: {}", e);
+                    let error_msg = e.to_string();
+                    if !is_benign_error(&error_msg) {
+                        console_log!("[KEEPALIVE] Failed to send ping: {}", error_msg);
+                    }
                     break;
                 }
-                console_log!("[KEEPALIVE] Ping sent");
             }
         });
     }
@@ -70,7 +85,11 @@ impl<'a> ProxyStream<'a> {
                     break;
                 }
                 Some(Err(e)) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                    let error_msg = e.to_string();
+                    if !is_benign_error(&error_msg) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+                    }
+                    break;
                 }
                 None => {
                     break;
@@ -179,7 +198,7 @@ impl<'a> ProxyStream<'a> {
             
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
-                    "[ERROR] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
+                    "[FATAL] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
                     TCP sockets cannot be used for HTTP services on ports 80/443. \
                     Target should be a raw TCP proxy service, not an HTTP endpoint.",
                     &addr, port
@@ -191,14 +210,14 @@ impl<'a> ProxyStream<'a> {
                     &addr, port
                 ))
             } else {
-                console_log!("[ERROR] Connection failed to {}:{} - {}", &addr, port, error_msg);
+                console_log!("[FATAL] Connection failed to {}:{} - {}", &addr, port, error_msg);
                 Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg))
             }
         })?;
 
         remote_socket.opened().await.map_err(|e| {
             let error_msg = e.to_string();
-            console_log!("[ERROR] Socket open failed for {}:{} - {}", &addr, port, error_msg);
+            console_log!("[FATAL] Socket open failed for {}:{} - {}", &addr, port, error_msg);
             
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 Error::RustError(format!(
@@ -223,13 +242,10 @@ impl<'a> ProxyStream<'a> {
                 let error_msg = e.to_string();
                 
                 // Filter out benign errors from normal connection closures
-                if error_msg.contains("WritableStream has been closed") 
-                    || error_msg.contains("broken pipe") 
-                    || error_msg.contains("connection reset") 
-                    || error_msg.contains("Connection closed") {
-                    console_log!("[INFO] Connection to {}:{} closed", &addr, port);
+                if is_benign_error(&error_msg) {
+                    // Silently handle benign connection closures
                 } else {
-                    console_log!("[ERROR] Data transfer error for {}:{} - {}", &addr, port, error_msg);
+                    console_log!("[FATAL] Transfer error for {}:{} - {}", &addr, port, error_msg);
                 }
                 
                 Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg))
@@ -297,7 +313,15 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
             self.ws
                 .send_with_bytes(buf)
                 .map(|_| buf.len())
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                .map_err(|e| {
+                    let error_msg = e.to_string();
+                    if is_benign_error(&error_msg) {
+                        // Silently handle benign write errors
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
+                    } else {
+                        std::io::Error::new(std::io::ErrorKind::Other, error_msg)
+                    }
+                }),
         );
     }
 
@@ -308,10 +332,17 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<tokio::io::Result<()>> {
         match self.ws.close(Some(1000), Some("shutdown".to_string())) {
             Ok(_) => Poll::Ready(Ok(())),
-            Err(e) => Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))),
+            Err(e) => {
+                let error_msg = e.to_string();
+                if is_benign_error(&error_msg) {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        error_msg,
+                    )))
+                }
+            }
         }
     }
 }
