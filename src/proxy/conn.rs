@@ -37,6 +37,8 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("stream closed")
         || error_lower.contains("eof")
         || error_lower.contains("connection aborted")
+        || error_lower.contains("network error")
+        || error_lower.contains("socket closed")
 }
 
 impl<'a> ProxyStream<'a> {
@@ -185,99 +187,91 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
-        // Wrap entire socket operation in a try/catch to suppress network connection errors
-        let socket_result = async {
-            if Self::is_http_port(port) {
-                console_log!(
-                    "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
-                    If connection fails, the target may be an HTTP service.",
-                    &addr, port
-                );
-            }
+        if Self::is_http_port(port) {
+            console_log!(
+                "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
+                If connection fails, the target may be an HTTP service.",
+                &addr, port
+            );
+        }
 
-            let mut remote_socket = match Socket::builder().connect(&addr, port) {
-                Ok(socket) => socket,
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    
-                    // Silently drop benign connection errors
-                    if is_benign_error(&error_msg) {
-                        return Err(Error::RustError("benign connection error".to_string()));
-                    }
-                    
-                    if error_msg.contains("HTTP") || error_msg.contains("http") {
-                        console_log!(
-                            "[FATAL] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
-                            TCP sockets cannot be used for HTTP services on ports 80/443. \
-                            Target should be a raw TCP proxy service, not an HTTP endpoint.",
-                            &addr, port
-                        );
-                        return Err(Error::RustError(format!(
-                            "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \
-                            Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \
-                            not HTTP/HTTPS.",
-                            &addr, port
-                        )));
-                    } else {
-                        console_log!("[FATAL] Connection failed to {}:{} - {}", &addr, port, error_msg);
-                        return Err(Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg)));
-                    }
+        // Connect with error handling
+        let mut remote_socket = match Socket::builder().connect(&addr, port) {
+            Ok(socket) => socket,
+            Err(e) => {
+                let error_msg = e.to_string();
+                
+                // Benign connection errors - return Ok to suppress CF logging
+                if is_benign_error(&error_msg) {
+                    return Ok(()); // Silently drop
                 }
-            };
-
-            match remote_socket.opened().await {
-                Ok(_) => {},
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    
-                    // Silently drop benign socket open errors
-                    if is_benign_error(&error_msg) {
-                        return Err(Error::RustError("benign socket open error".to_string()));
-                    }
-                    
-                    console_log!("[FATAL] Socket open failed for {}:{} - {}", &addr, port, error_msg);
-                    
-                    if error_msg.contains("HTTP") || error_msg.contains("http") {
-                        return Err(Error::RustError(format!(
-                            "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
-                            Please verify your proxy configuration points to a raw TCP service.",
-                            &addr, port
-                        )));
-                    } else {
-                        return Err(Error::RustError(format!("Socket open failed for {}:{}: {}", &addr, port, error_msg)));
-                    }
+                
+                if error_msg.contains("HTTP") || error_msg.contains("http") {
+                    console_log!(
+                        "[FATAL] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
+                        TCP sockets cannot be used for HTTP services on ports 80/443. \
+                        Target should be a raw TCP proxy service, not an HTTP endpoint.",
+                        &addr, port
+                    );
+                    return Err(Error::RustError(format!(
+                        "HTTP service detected at {}:{}. Cannot use TCP socket for HTTP services. \
+                        Please ensure your proxy backend is running a raw TCP protocol (VLESS/VMess/Trojan), \
+                        not HTTP/HTTPS.",
+                        &addr, port
+                    )));
+                } else {
+                    console_log!("[FATAL] Connection failed to {}:{} - {}", &addr, port, error_msg);
+                    return Err(Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg)));
                 }
             }
+        };
 
-            console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
-
-            match tokio::io::copy_bidirectional(self, &mut remote_socket).await {
-                Ok((a_to_b, b_to_a)) => {
-                    console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
-                        &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
-                    Ok(())
-                },
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    
-                    // Silently handle benign transfer errors
-                    if is_benign_error(&error_msg) {
-                        return Err(Error::RustError("benign transfer error".to_string()));
-                    }
-                    
-                    console_log!("[FATAL] Transfer error for {}:{} - {}", &addr, port, error_msg);
-                    Err(Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg)))
+        // Wait for socket to open
+        match remote_socket.opened().await {
+            Ok(_) => {},
+            Err(e) => {
+                let error_msg = e.to_string();
+                
+                // Benign socket open errors - return Ok to suppress CF logging
+                if is_benign_error(&error_msg) {
+                    return Ok(()); // Silently drop
+                }
+                
+                console_log!("[FATAL] Socket open failed for {}:{} - {}", &addr, port, error_msg);
+                
+                if error_msg.contains("HTTP") || error_msg.contains("http") {
+                    return Err(Error::RustError(format!(
+                        "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
+                        Please verify your proxy configuration points to a raw TCP service.",
+                        &addr, port
+                    )));
+                } else {
+                    return Err(Error::RustError(format!("Socket open failed for {}:{}: {}", &addr, port, error_msg)));
                 }
             }
-        }.await;
+        }
 
-        // Suppress benign errors completely - don't bubble them up
-        match socket_result {
-            Err(e) if is_benign_error(&e.to_string()) => {
-                // Silently drop benign errors
+        console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
+
+        // CRITICAL FIX: Wrap copy_bidirectional to catch JS-level network errors
+        match tokio::io::copy_bidirectional(self, &mut remote_socket).await {
+            Ok((a_to_b, b_to_a)) => {
+                console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
+                    &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
                 Ok(())
             },
-            other => other
+            Err(e) => {
+                let error_msg = e.to_string();
+                
+                // THIS IS THE KEY FIX: Benign transfer errors return Ok() to suppress CF error logs
+                if is_benign_error(&error_msg) {
+                    // Connection naturally closed - not an error
+                    return Ok(());
+                }
+                
+                console_log!("[FATAL] Transfer error for {}:{} - {}", &addr, port, error_msg);
+                Err(Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg)))
+            }
         }
     }
 
