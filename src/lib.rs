@@ -27,6 +27,7 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("connection aborted")
         || error_lower.contains("transfer error")
         || error_lower.contains("canceled")
+        || error_lower.contains("benign")
 }
 
 #[event(fetch)]
@@ -134,26 +135,37 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         server.accept()?;
 
-        // FIXED: Single spawn_local without nesting to prevent RefCell corruption
+        // FIXED: Graceful error handling at spawn boundary to prevent CF error logging
         wasm_bindgen_futures::spawn_local(async move {
+            // Get events with benign error handling
             let events = match server.events() {
                 Ok(ev) => ev,
                 Err(e) => {
                     let error_msg = e.to_string();
+                    // Only log non-benign errors
                     if !is_benign_error(&error_msg) {
-                        console_log!("[ERROR] Failed to get events: {}", error_msg);
+                        console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
                     }
+                    // Exit gracefully for benign errors - no panic, no CF error log
                     return;
                 }
             };
 
-            if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
-                let error_msg = e.to_string();
-                // Silently drop benign errors - no logging needed
-                if !is_benign_error(&error_msg) {
-                    console_log!("[ERROR] {}", error_msg);
+            // Process proxy stream with full benign error suppression
+            match ProxyStream::new(cx.data, &server, events).process().await {
+                Ok(_) => {
+                    // Normal completion - connection closed gracefully
+                },
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    // Only log fatal errors - benign errors are silently dropped
+                    if !is_benign_error(&error_msg) {
+                        console_log!("[FATAL] Proxy processing error: {}", error_msg);
+                    }
+                    // Benign errors don't bubble up - they end here
                 }
             }
+            // No error propagation = no CF error logs for benign cases
         });
 
         Response::from_websocket(client)
