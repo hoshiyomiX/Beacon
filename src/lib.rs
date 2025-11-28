@@ -134,41 +134,24 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         server.accept()?;
 
+        // FIXED: Single spawn_local without nesting to prevent RefCell corruption
         wasm_bindgen_futures::spawn_local(async move {
-            // Wrap the entire processing in a catch block to suppress runtime-level errors
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                wasm_bindgen_futures::spawn_local(async move {
-                    let events = match server.events() {
-                        Ok(ev) => ev,
-                        Err(e) => {
-                            let error_msg = e.to_string();
-                            if !is_benign_error(&error_msg) {
-                                console_log!("[ERROR] Failed to get events: {}", error_msg);
-                            }
-                            return;
-                        }
-                    };
+            let events = match server.events() {
+                Ok(ev) => ev,
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    if !is_benign_error(&error_msg) {
+                        console_log!("[ERROR] Failed to get events: {}", error_msg);
+                    }
+                    return;
+                }
+            };
 
-                    if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
-                        let error_msg = e.to_string();
-                        // Silently drop benign errors - no logging needed
-                        if !is_benign_error(&error_msg) {
-                            console_log!("[ERROR] {}", error_msg);
-                        }
-                    }
-                });
-            }));
-
-            // Catch panics from the runtime and suppress them if benign
-            if let Err(panic_err) = result {
-                if let Some(s) = panic_err.downcast_ref::<String>() {
-                    if !is_benign_error(s) {
-                        console_log!("[PANIC] {}", s);
-                    }
-                } else if let Some(s) = panic_err.downcast_ref::<&str>() {
-                    if !is_benign_error(s) {
-                        console_log!("[PANIC] {}", s);
-                    }
+            if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
+                let error_msg = e.to_string();
+                // Silently drop benign errors - no logging needed
+                if !is_benign_error(&error_msg) {
+                    console_log!("[ERROR] {}", error_msg);
                 }
             }
         });
