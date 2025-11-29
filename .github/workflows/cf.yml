@@ -34,7 +34,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v2
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v3
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-
@@ -44,6 +44,12 @@ jobs:
           # Detect wasm-bindgen version from Cargo.lock for exact matching
           WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
           echo "Detected wasm-bindgen version: $WASM_BINDGEN_VERSION"
+          
+          # Clear worker-build cache to force fresh wasm-bindgen installation
+          if [ -d ~/.cache/worker-build ]; then
+            echo "Clearing worker-build cache..."
+            rm -rf ~/.cache/worker-build
+          fi
           
           # Only install if not cached or version mismatch
           if ! command -v wasm-bindgen &> /dev/null; then
