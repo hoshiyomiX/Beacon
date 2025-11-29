@@ -1,5 +1,6 @@
 use uuid::Uuid;
 
+#[derive(Clone, Debug)]
 pub struct Config {
     pub uuid: Uuid,
     pub proxy_addr: String,
