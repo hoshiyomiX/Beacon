@@ -8,13 +8,10 @@ use pin_project_lite::pin_project;
 use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
-use wasm_bindgen_futures::spawn_local;
-use gloo_timers::future::TimeoutFuture;
 
 // Reduced buffer sizes for lower memory usage in Cloudflare Workers
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
-static KEEPALIVE_INTERVAL_MS: u32 = 30_000; // 30 seconds
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -37,6 +34,8 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("stream closed")
         || error_lower.contains("eof")
         || error_lower.contains("connection aborted")
+        || error_lower.contains("timeout")
+        || error_lower.contains("timed out")
 }
 
 impl<'a> ProxyStream<'a> {
@@ -49,26 +48,6 @@ impl<'a> ProxyStream<'a> {
             buffer,
             events,
         }
-    }
-    
-    /// Spawn a keep-alive task that sends ping messages periodically
-    pub fn spawn_keepalive(ws: &WebSocket) {
-        let ws_clone = ws.clone();
-        
-        spawn_local(async move {
-            loop {
-                TimeoutFuture::new(KEEPALIVE_INTERVAL_MS).await;
-                
-                // Send ping to keep connection alive - suppress benign errors
-                if let Err(e) = ws_clone.send_with_str("") {
-                    let error_msg = e.to_string();
-                    if !is_benign_error(&error_msg) {
-                        console_log!("[KEEPALIVE] Failed to send ping: {}", error_msg);
-                    }
-                    break;
-                }
-            }
-        });
     }
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
@@ -105,9 +84,6 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn process(&mut self) -> Result<()> {
-        // Start keep-alive mechanism
-        Self::spawn_keepalive(self.ws);
-        
         let peek_buffer_len = 62;
         self.fill_buffer_until(peek_buffer_len).await?;
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
@@ -196,6 +172,11 @@ impl<'a> ProxyStream<'a> {
         let mut remote_socket = Socket::builder().connect(&addr, port).map_err(|e| {
             let error_msg = e.to_string();
             
+            // Return benign errors as OK to avoid propagating normal disconnects
+            if is_benign_error(&error_msg) {
+                return Error::RustError("connection closed".to_string());
+            }
+            
             if error_msg.contains("HTTP") || error_msg.contains("http") {
                 console_log!(
                     "[FATAL] Failed to connect to {}:{} - Cloudflare detected an HTTP service. \
@@ -217,6 +198,12 @@ impl<'a> ProxyStream<'a> {
 
         remote_socket.opened().await.map_err(|e| {
             let error_msg = e.to_string();
+            
+            // Return benign errors as OK
+            if is_benign_error(&error_msg) {
+                return Error::RustError("connection closed".to_string());
+            }
+            
             console_log!("[FATAL] Socket open failed for {}:{} - {}", &addr, port, error_msg);
             
             if error_msg.contains("HTTP") || error_msg.contains("http") {
@@ -241,13 +228,12 @@ impl<'a> ProxyStream<'a> {
             .map_err(|e| {
                 let error_msg = e.to_string();
                 
-                // Filter out benign errors from normal connection closures
+                // Benign errors are normal - don't log or return error
                 if is_benign_error(&error_msg) {
-                    // Silently handle benign connection closures
-                } else {
-                    console_log!("[FATAL] Transfer error for {}:{} - {}", &addr, port, error_msg);
+                    return Error::RustError("connection closed".to_string());
                 }
                 
+                console_log!("[FATAL] Transfer error for {}:{} - {}", &addr, port, error_msg);
                 Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg))
             })?;
         Ok(())
@@ -316,7 +302,7 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
                 .map_err(|e| {
                     let error_msg = e.to_string();
                     if is_benign_error(&error_msg) {
-                        // Silently handle benign write errors
+                        // Silently handle benign write errors - return BrokenPipe for normal handling
                         std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
                     } else {
                         std::io::Error::new(std::io::ErrorKind::Other, error_msg)
