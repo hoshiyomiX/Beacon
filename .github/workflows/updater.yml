@@ -1,0 +1,166 @@
+name: Cargo.lock Updater
+
+# This workflow fixes version mismatches between Cargo.toml and Cargo.lock
+# Specifically targets wasm-bindgen to ensure exact version matching
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to update (default: wasm-bindgen)'
+        required: false
+        default: 'wasm-bindgen'
+        type: string
+      version:
+        description: 'Target version (default: 0.2.105)'
+        required: false
+        default: '0.2.105'
+        type: string
+
+jobs:
+  update-cargo-lock:
+    runs-on: ubuntu-latest
+    environment: cf
+    
+    steps:
+      - name: Checkout beta branch
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-update-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-update-
+      
+      - name: Update wasm-bindgen dependencies to exact version
+        run: |
+          echo "📦 Updating ${{ inputs.package }} to version ${{ inputs.version }}"
+          
+          # Update all wasm-bindgen related packages to exact version
+          cargo update -p wasm-bindgen --precise ${{ inputs.version }}
+          cargo update -p wasm-bindgen-macro --precise ${{ inputs.version }}
+          cargo update -p wasm-bindgen-backend --precise ${{ inputs.version }}
+          cargo update -p wasm-bindgen-shared --precise ${{ inputs.version }}
+          cargo update -p wasm-bindgen-macro-support --precise ${{ inputs.version }}
+          
+          echo "✅ Cargo.lock updated successfully"
+      
+      - name: Verify wasm-bindgen version in Cargo.lock
+        run: |
+          echo "🔍 Verifying wasm-bindgen version in Cargo.lock..."
+          
+          WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
+          
+          echo "Found wasm-bindgen version: $WASM_BINDGEN_VERSION"
+          
+          if [ "$WASM_BINDGEN_VERSION" = "${{ inputs.version }}" ]; then
+            echo "✅ Version match confirmed: $WASM_BINDGEN_VERSION"
+          else
+            echo "❌ Version mismatch detected!"
+            echo "Expected: ${{ inputs.version }}"
+            echo "Found: $WASM_BINDGEN_VERSION"
+            exit 1
+          fi
+      
+      - name: Test build compatibility
+        run: |
+          echo "🔨 Testing build with updated dependencies..."
+          cargo check --target wasm32-unknown-unknown --release
+          echo "✅ Build check passed"
+      
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --exit-code Cargo.lock; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No changes detected in Cargo.lock"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected in Cargo.lock"
+          fi
+      
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "fix(deps): sync Cargo.lock wasm-bindgen to ${{ inputs.version }}"
+          title: "🔧 Fix: Sync wasm-bindgen to ${{ inputs.version }} in Cargo.lock"
+          body: |
+            ## 🔧 Cargo.lock Version Sync
+            
+            ### Issue
+            Fixed critical version mismatch between Cargo.toml and Cargo.lock for `${{ inputs.package }}`.
+            
+            ### Changes
+            - Updated `wasm-bindgen` to version **${{ inputs.version }}** in Cargo.lock
+            - Updated all wasm-bindgen sub-packages for consistency
+            - Verified build compatibility with wasm32-unknown-unknown target
+            
+            ### Why This Matters
+            wasm-bindgen requires **exact version matching** between:
+            - The Rust library version (in Cargo.lock)
+            - The CLI tool version (in build workflow)
+            
+            Mismatches cause build failures with errors like:
+            ```
+            error: rust wasm file schema version: X.X.X
+                  this binary schema version: Y.Y.Y
+            ```
+            
+            ### Verification
+            - ✅ Cargo.lock updated to ${{ inputs.version }}
+            - ✅ Build check passed for wasm32-unknown-unknown
+            - ✅ All wasm-bindgen sub-packages synchronized
+            
+            ### Next Steps
+            1. Review and merge this PR
+            2. Ensure `.github/workflows/cf.yml` uses matching wasm-bindgen-cli version
+            3. Deploy to beta for testing
+            
+            ---
+            *Auto-generated by updater.yml workflow*
+            *Triggered by: @${{ github.actor }}*
+          branch: fix/wasm-bindgen-version-sync-${{ github.run_number }}
+          base: beta
+          labels: dependencies, critical, version-sync, automated
+          delete-branch: true
+      
+      - name: Summary
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          echo "## 🎉 Cargo.lock Update Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Updated Package" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package:** ${{ inputs.package }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Status" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Pull request created successfully" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Build compatibility verified" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please review and merge the PR to apply changes." >> $GITHUB_STEP_SUMMARY
+      
+      - name: No Changes Summary
+        if: steps.changes.outputs.changed == 'false'
+        run: |
+          echo "## ℹ️  No Update Needed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Cargo.lock is already synchronized with the requested version." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package:** ${{ inputs.package }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
