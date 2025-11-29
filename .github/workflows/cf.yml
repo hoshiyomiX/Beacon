@@ -41,10 +41,26 @@ jobs:
 
       - name: Install build tools (cached)
         run: |
-          # Only install if not cached
+          # Detect wasm-bindgen version from Cargo.lock for exact matching
+          WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
+          echo "Detected wasm-bindgen version: $WASM_BINDGEN_VERSION"
+          
+          # Only install if not cached or version mismatch
           if ! command -v wasm-bindgen &> /dev/null; then
-            cargo install -f wasm-bindgen-cli --version 0.2.105
+            echo "Installing wasm-bindgen-cli $WASM_BINDGEN_VERSION"
+            cargo install -f wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
+          else
+            INSTALLED_VERSION=$(wasm-bindgen --version | cut -d' ' -f2)
+            if [ "$INSTALLED_VERSION" != "$WASM_BINDGEN_VERSION" ]; then
+              echo "Version mismatch detected. Reinstalling..."
+              echo "Installed: $INSTALLED_VERSION, Required: $WASM_BINDGEN_VERSION"
+              cargo install -f wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
+            else
+              echo "wasm-bindgen-cli $INSTALLED_VERSION already installed"
+            fi
           fi
+          
+          # Install worker-build
           if ! command -v worker-build &> /dev/null; then
             cargo install -q worker-build --version 0.7.0
           fi
