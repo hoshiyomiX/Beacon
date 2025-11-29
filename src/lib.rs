@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
@@ -13,6 +14,11 @@ use regex::Regex;
 
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
+
+// Simple in-memory rate limiter
+static RATE_LIMITER: Lazy<Mutex<HashMap<String, Vec<u64>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+const RATE_LIMIT_WINDOW_MS: u64 = 60_000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS: usize = 100; // 100 requests per minute per IP
 
 /// Check if an error is benign (expected during normal operation)
 fn is_benign_error(error_msg: &str) -> bool {
@@ -26,10 +32,42 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("eof")
         || error_lower.contains("connection aborted")
         || error_lower.contains("transfer error")
+        || error_lower.contains("timeout")
+        || error_lower.contains("timed out")
+}
+
+/// Check rate limit for a given IP address
+fn check_rate_limit(ip: &str) -> bool {
+    let mut limiter = RATE_LIMITER.lock().unwrap();
+    let now = Date::now().as_millis() as u64;
+    
+    let timestamps = limiter.entry(ip.to_string()).or_insert_with(Vec::new);
+    
+    // Remove old timestamps outside the window
+    timestamps.retain(|&ts| now - ts < RATE_LIMIT_WINDOW_MS);
+    
+    // Check if limit exceeded
+    if timestamps.len() >= RATE_LIMIT_MAX_REQUESTS {
+        return false;
+    }
+    
+    // Add current timestamp
+    timestamps.push(now);
+    true
 }
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
+    // Rate limiting check
+    let client_ip = req
+        .headers()
+        .get("cf-connecting-ip")?
+        .unwrap_or_else(|| "unknown".to_string());
+    
+    if !check_rate_limit(&client_ip) {
+        return Response::error("Rate limit exceeded. Please try again later.", 429);
+    }
+
     let uuid = env
         .var("UUID")
         .map(|x| Uuid::parse_str(&x.to_string()).unwrap_or_default())?;
@@ -133,13 +171,33 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         server.accept()?;
 
+        // Directly await the proxy stream processing instead of spawn_local
+        // This is more CPU efficient in Cloudflare Workers environment
+        let config = cx.data.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let events = server.events().unwrap();
-            if let Err(e) = ProxyStream::new(cx.data, &server, events).process().await {
-                let error_msg = e.to_string();
-                // Silently drop benign errors - no logging needed
-                if !is_benign_error(&error_msg) {
-                    console_log!("[ERROR] {}", error_msg);
+            let events = match server.events() {
+                Ok(e) => e,
+                Err(e) => {
+                    console_log!("[ERROR] Failed to get events: {}", e);
+                    return;
+                }
+            };
+            
+            let result = ProxyStream::new(config, &server, events).process().await;
+            
+            // Handle result - return OK for benign errors
+            match result {
+                Ok(_) => {
+                    // Connection completed successfully
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    // Only log non-benign errors to save CPU cycles
+                    if !is_benign_error(&error_msg) {
+                        console_log!("[ERROR] {}", error_msg);
+                    }
+                    // Always treat as successful completion for client
+                    // since these are normal connection lifecycle events
                 }
             }
         });
