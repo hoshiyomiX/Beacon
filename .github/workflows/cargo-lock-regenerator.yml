@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   regenerate-lockfile:
@@ -21,6 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -113,48 +113,26 @@ jobs:
             echo "🧹 Backup cleaned up"
           fi
 
-      - name: Create Pull Request
+      - name: Commit and push regenerated Cargo.lock
         if: steps.verify.outputs.build_verified == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: |
-            chore: Regenerate Cargo.lock
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Check if there are changes to commit
+          if [ -n "$(git status --porcelain Cargo.lock)" ]; then
+            git add Cargo.lock
+            git commit -m "chore: Regenerate Cargo.lock
             
             Generated fresh Cargo.lock from Cargo.toml
             Build verification: ✅ PASSED
-          title: "chore: Regenerate Cargo.lock"
-          body: |
-            ## Cargo.lock Regeneration
+            Cache cleaned: ${{ inputs.clean_cache }}"
             
-            This PR contains a freshly regenerated `Cargo.lock` file.
-            
-            ### What Changed
-            - 🔄 Generated new `Cargo.lock` from `Cargo.toml`
-            - ✅ Build verification passed with `cargo check`
-            - 📦 All dependencies resolved
-            
-            ### Verification Steps
-            - ✅ Lockfile generated successfully
-            - ✅ Build check passed
-            - ✅ Dependency tree validated
-            
-            ### Cache Status
-            ${{ inputs.clean_cache && '🧹 Cargo cache was cleaned before regeneration' || '📦 Used existing cargo cache' }}
-            
-            **Ready for review and merge to `beta` branch.**
-            
-            ---
-            *Automated by GitHub Actions - Cargo.lock Regenerator*
-          branch: chore/regenerate-cargo-lock-${{ github.run_number }}
-          base: beta
-          delete-branch: true
-          labels: |
-            dependencies
-            automated
-            rust
-            cargo-lock
-          assignees: hoshiyomiX
+            git push origin beta
+            echo "✅ Cargo.lock committed and pushed to beta branch"
+          else
+            echo "ℹ️  No changes to commit - Cargo.lock is already up to date"
+          fi
 
       - name: Summary
         if: always()
@@ -164,7 +142,7 @@ jobs:
             echo "✅ SUCCESS: Cargo.lock regenerated and verified"
             echo "   📄 New lockfile created from Cargo.toml"
             echo "   ✅ Build verification: PASSED"
-            echo "   🔀 PR created for review"
+            echo "   🔀 Committed directly to beta branch"
           else
             echo "❌ FAILED: Could not regenerate Cargo.lock"
             echo "   Check the logs above for details"
