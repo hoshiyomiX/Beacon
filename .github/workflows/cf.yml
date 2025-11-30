@@ -44,13 +44,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
-      - name: Read versions from Cargo.toml and install tools
+      - name: Install wasm-bindgen-cli
         run: |
           echo "=== Reading versions from Cargo.toml ==="
-          
-          # Get worker version from Cargo.toml (handle =, ~, ^ prefixes)
-          WORKER_VERSION=$(grep 'worker = ' Cargo.toml | head -1 | sed -E 's/.*"[=~^]?([0-9.]+)".*/\1/')
-          echo "📦 worker: $WORKER_VERSION (from Cargo.toml)"
           
           # Get wasm-bindgen version from Cargo.toml
           WASM_BINDGEN_VERSION=$(grep 'wasm-bindgen = ' Cargo.toml | head -1 | sed -E 's/.*"[=~^]?([0-9.]+)".*/\1/')
@@ -58,7 +54,6 @@ jobs:
           
           echo ""
           echo "=== Installing wasm-bindgen-cli ==="
-          # Use the same version as in Cargo.toml for maximum compatibility
           
           if command -v wasm-bindgen &> /dev/null; then
             INSTALLED_WASM=$(wasm-bindgen --version | cut -d' ' -f2)
@@ -73,44 +68,19 @@ jobs:
             cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
           echo "✅ wasm-bindgen: $(wasm-bindgen --version)"
-          
-          echo ""
-          echo "=== Installing worker-build ==="
-          # Determine worker-build version based on worker version
-          # Extract major.minor version
-          WORKER_MAJOR_MINOR=$(echo "$WORKER_VERSION" | cut -d'.' -f1,2)
-          echo "📦 Detected worker version: $WORKER_MAJOR_MINOR"
-          
-          # worker 0.6.x is compatible with worker-build 0.2.x (which fixes the --version bug)
-          if [ "$WORKER_MAJOR_MINOR" = "0.4" ] || [ "$WORKER_MAJOR_MINOR" = "0.5" ]; then
-            # worker 0.4.x and 0.5.x use worker-build 0.1.x
-            WORKER_BUILD_VERSION="0.1"
-            echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
-            cargo install worker-build --version "^$WORKER_BUILD_VERSION"
-          elif [ "$WORKER_MAJOR_MINOR" = "0.6" ] || [ "$WORKER_MAJOR_MINOR" = "0.7" ]; then
-            # worker 0.6.x and 0.7.x use worker-build 0.2.x
-            WORKER_BUILD_VERSION="0.2"
-            echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
-            cargo install worker-build --version "^$WORKER_BUILD_VERSION"
-          else
-            # Fallback to latest for other versions
-            echo "📦 worker $WORKER_VERSION - installing latest worker-build"
-            cargo install worker-build
-          fi
-          echo "✅ worker-build: $(worker-build --version)"
-          
-          echo ""
-          echo "=== Tool Installation Summary ==="
-          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version)"
-          echo "✅ worker-build: $(worker-build --version)"
-          echo "✅ worker (in Cargo.toml): $WORKER_VERSION"
 
-      - name: Build with worker-build
+      - name: Build WASM
         run: |
           echo "=== Building Cloudflare Worker ==="
-          worker-build --release
+          cargo build --target wasm32-unknown-unknown --release
         env:
           CARGO_INCREMENTAL: 1
+
+      - name: Run wasm-bindgen
+        run: |
+          echo "=== Running wasm-bindgen ==="
+          mkdir -p build
+          wasm-bindgen --target bundler --out-dir ./build ./target/wasm32-unknown-unknown/release/beacon.wasm
 
       - name: Remove build command from wrangler.toml
         run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
