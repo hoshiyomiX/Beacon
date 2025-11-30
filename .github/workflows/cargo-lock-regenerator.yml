@@ -41,6 +41,17 @@ jobs:
           rm -rf ~/.cargo/registry/index
           echo "✅ Cache cleaned"
 
+      - name: Check initial state
+        id: check_initial
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "had_lockfile=true" >> $GITHUB_OUTPUT
+            echo "📦 Cargo.lock exists - will regenerate"
+          else
+            echo "had_lockfile=false" >> $GITHUB_OUTPUT
+            echo "⚠️  Cargo.lock missing - will create new one"
+          fi
+
       - name: Backup and remove existing Cargo.lock
         run: |
           if [ -f Cargo.lock ]; then
@@ -119,19 +130,35 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # Check if there are changes to commit
-          if [ -n "$(git status --porcelain Cargo.lock)" ]; then
+          # Add Cargo.lock (whether new or modified)
+          if [ -f Cargo.lock ]; then
             git add Cargo.lock
-            git commit -m "chore: Regenerate Cargo.lock
             
-            Generated fresh Cargo.lock from Cargo.toml
-            Build verification: ✅ PASSED
-            Cache cleaned: ${{ inputs.clean_cache }}"
-            
-            git push origin beta
-            echo "✅ Cargo.lock committed and pushed to beta branch"
+            # Check if there are actual changes to commit
+            if git diff --cached --quiet; then
+              echo "ℹ️  No changes to commit - Cargo.lock is identical"
+            else
+              if [ "${{ steps.check_initial.outputs.had_lockfile }}" = "false" ]; then
+                COMMIT_MSG="chore: Add missing Cargo.lock
+
+Generated fresh Cargo.lock from Cargo.toml
+Build verification: ✅ PASSED
+Cache cleaned: ${{ inputs.clean_cache }}"
+              else
+                COMMIT_MSG="chore: Regenerate Cargo.lock
+
+Generated fresh Cargo.lock from Cargo.toml
+Build verification: ✅ PASSED
+Cache cleaned: ${{ inputs.clean_cache }}"
+              fi
+              
+              git commit -m "$COMMIT_MSG"
+              git push origin beta
+              echo "✅ Cargo.lock committed and pushed to beta branch"
+            fi
           else
-            echo "ℹ️  No changes to commit - Cargo.lock is already up to date"
+            echo "❌ Cargo.lock file not found after generation!"
+            exit 1
           fi
 
       - name: Summary
@@ -140,6 +167,11 @@ jobs:
           echo "=== REGENERATION SUMMARY ==="
           if [ "${{ steps.verify.outputs.build_verified }}" = "true" ]; then
             echo "✅ SUCCESS: Cargo.lock regenerated and verified"
+            if [ "${{ steps.check_initial.outputs.had_lockfile }}" = "false" ]; then
+              echo "   🆕 Created new Cargo.lock (was missing)"
+            else
+              echo "   🔄 Regenerated existing Cargo.lock"
+            fi
             echo "   📄 New lockfile created from Cargo.toml"
             echo "   ✅ Build verification: PASSED"
             echo "   🔀 Committed directly to beta branch"
