@@ -76,13 +76,21 @@ jobs:
           
           echo ""
           echo "=== Installing worker-build ==="
-          # Always install latest worker-build (it auto-detects worker version)
-          if command -v worker-build &> /dev/null; then
-            echo "🔄 Updating worker-build to latest..."
-            cargo install --force --locked worker-build
+          # Determine worker-build version based on worker version
+          if [[ "$WORKER_VERSION" =~ ^0\.4\. ]]; then
+            # worker 0.4.x requires worker-build 0.1.x
+            WORKER_BUILD_VERSION="0.1"
+            echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
+            cargo install worker-build --version "^$WORKER_BUILD_VERSION" --locked
+          elif [[ "$WORKER_VERSION" =~ ^0\.7\. ]]; then
+            # worker 0.7.x requires worker-build 0.2.x
+            WORKER_BUILD_VERSION="0.2"
+            echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
+            cargo install worker-build --version "^$WORKER_BUILD_VERSION" --locked
           else
-            echo "Installing worker-build..."
-            cargo install --locked worker-build
+            # Fallback to latest for other versions
+            echo "📦 worker $WORKER_VERSION - installing latest worker-build"
+            cargo install worker-build --locked
           fi
           echo "✅ worker-build: $(worker-build --version)"
           
