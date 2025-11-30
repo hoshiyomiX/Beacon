@@ -25,59 +25,59 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache cargo registry and build artifacts
+      - name: Cache cargo registry only (no binaries)
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-v5
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-v6
 
-      - name: Install build tools (cached)
+      - name: Clear all caches and force install tools
         run: |
-          # Detect wasm-bindgen version from Cargo.lock for exact matching
-          WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
-          echo "Detected wasm-bindgen version: $WASM_BINDGEN_VERSION"
-          
-          # CRITICAL: Clear worker-build cache to remove old wasm-bindgen-cli
-          echo "Clearing worker-build cache directory..."
+          echo "=== Clearing all build caches ==="
           rm -rf ~/.cache/worker-build
+          rm -rf ~/.cargo/bin/wasm-bindgen*
+          rm -rf ~/.cargo/bin/worker-build
+          rm -rf target/
           
-          # Force install exact wasm-bindgen-cli version
-          echo "Force installing wasm-bindgen-cli $WASM_BINDGEN_VERSION"
-          cargo install -f wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
+          echo "=== Detecting wasm-bindgen version from Cargo.lock ==="
+          WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
+          echo "Required wasm-bindgen version: $WASM_BINDGEN_VERSION"
           
-          # Verify installation
+          echo "=== Force installing wasm-bindgen-cli $WASM_BINDGEN_VERSION ==="
+          cargo install --force wasm-bindgen-cli --version $WASM_BINDGEN_VERSION
+          
+          echo "=== Verifying wasm-bindgen-cli installation ==="
           INSTALLED_VERSION=$(wasm-bindgen --version | cut -d' ' -f2)
-          echo "Installed wasm-bindgen-cli version: $INSTALLED_VERSION"
+          echo "Installed version: $INSTALLED_VERSION"
           
           if [ "$INSTALLED_VERSION" != "$WASM_BINDGEN_VERSION" ]; then
-            echo "ERROR: Version mismatch after installation!"
-            echo "Expected: $WASM_BINDGEN_VERSION, Got: $INSTALLED_VERSION"
+            echo "❌ ERROR: Version mismatch!"
+            echo "   Expected: $WASM_BINDGEN_VERSION"
+            echo "   Got: $INSTALLED_VERSION"
             exit 1
           fi
           
-          # Install worker-build
-          echo "Installing worker-build 0.7.0..."
-          cargo install -f worker-build --version 0.7.0
+          echo "✅ wasm-bindgen-cli $INSTALLED_VERSION verified"
+          
+          echo "=== Installing worker-build 0.7.0 ==="
+          cargo install --force worker-build --version 0.7.0
+          echo "✅ worker-build installed"
 
-      - name: Build (optimized)
+      - name: Build with worker-build
         run: |
+          echo "=== Starting build ==="
           worker-build --release
         env:
-          CARGO_INCREMENTAL: 1
+          CARGO_INCREMENTAL: 0
           CARGO_TERM_COLOR: always
 
       - name: Remove build command from wrangler.toml
         run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
 
-      - name: Deploy
+      - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
