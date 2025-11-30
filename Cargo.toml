@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-tokio = { version = "1.44", features = ["io-util", "rt"] }
+tokio = { version = "1.44", features = ["io-util", "sync"] }
 bytes = "1.10"
 futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 pin-project-lite = "0.2"
@@ -16,13 +16,13 @@ pretty-bytes = "0.2.2"
 serde_json = "1.0"
 base64 = "0.22"
 getrandom = { version = "0.2", features = ["js"] }
-uuid = "1.16"
+uuid = { version = "1.16", features = ["v4", "js"] }
 aes-gcm = "0.10"
 aes = "0.8"
 sha2 = "0.10"
 md-5 = "0.10"
 anyhow = "1.0"
-reqwest = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 regex = "1.11"
 once_cell = "1.21"
 wasm-bindgen = "0.2.99"
