@@ -32,9 +32,9 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-v6
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-v7-stable
 
-      - name: Clear all caches and force install tools
+      - name: Clear all caches and install build tools
         run: |
           echo "=== Clearing all build caches ==="
           rm -rf ~/.cache/worker-build
@@ -62,8 +62,8 @@ jobs:
           
           echo "✅ wasm-bindgen-cli $INSTALLED_VERSION verified"
           
-          echo "=== Installing worker-build 0.7.0 ==="
-          cargo install --force worker-build --version 0.7.0
+          echo "=== Installing worker-build (latest stable) ==="
+          cargo install --force worker-build
           echo "✅ worker-build installed"
 
       - name: Build with worker-build
