@@ -48,38 +48,45 @@ jobs:
         run: |
           echo "=== Reading versions from Cargo.toml ==="
           
-          # Get worker version from Cargo.toml
-          WORKER_VERSION=$(grep -A 1 'name = "worker"' Cargo.toml | grep 'version' | head -1 | cut -d'"' -f2 | sed 's/^=//' | sed 's/[~^]//' | xargs)
+          # Get worker version from Cargo.toml (handle =, ~, ^ prefixes)
+          WORKER_VERSION=$(grep 'worker = ' Cargo.toml | head -1 | sed -E 's/.*"[=~^]?([0-9.]+)".*/\1/')
           echo "📦 worker: $WORKER_VERSION (from Cargo.toml)"
+          
+          # Get wasm-bindgen version from Cargo.toml
+          WASM_BINDGEN_VERSION=$(grep 'wasm-bindgen = ' Cargo.toml | head -1 | sed -E 's/.*"[=~^]?([0-9.]+)".*/\1/')
+          echo "📦 wasm-bindgen: $WASM_BINDGEN_VERSION (from Cargo.toml)"
           
           echo ""
           echo "=== Installing wasm-bindgen-cli ==="
-          # Force wasm-bindgen-cli to 0.2.105 for worker-build 0.1.x compatibility
-          REQUIRED_WASM_VERSION="0.2.105"
+          # Use the same version as in Cargo.toml for maximum compatibility
           
           if command -v wasm-bindgen &> /dev/null; then
             INSTALLED_WASM=$(wasm-bindgen --version | cut -d' ' -f2)
-            if [ "$INSTALLED_WASM" = "$REQUIRED_WASM_VERSION" ]; then
+            if [ "$INSTALLED_WASM" = "$WASM_BINDGEN_VERSION" ]; then
               echo "✅ wasm-bindgen-cli $INSTALLED_WASM already installed (cached)"
             else
-              echo "🔧 Installing wasm-bindgen-cli $REQUIRED_WASM_VERSION (required for worker-build 0.1.x)..."
-              cargo install --force wasm-bindgen-cli --version "$REQUIRED_WASM_VERSION"
+              echo "🔧 Installing wasm-bindgen-cli $WASM_BINDGEN_VERSION..."
+              cargo install --force wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
             fi
           else
-            echo "🔧 Installing wasm-bindgen-cli $REQUIRED_WASM_VERSION..."
-            cargo install wasm-bindgen-cli --version "$REQUIRED_WASM_VERSION"
+            echo "🔧 Installing wasm-bindgen-cli $WASM_BINDGEN_VERSION..."
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
           fi
           echo "✅ wasm-bindgen: $(wasm-bindgen --version)"
           
           echo ""
           echo "=== Installing worker-build ==="
           # Determine worker-build version based on worker version
-          if [[ "$WORKER_VERSION" =~ ^0\.4\. ]]; then
-            # worker 0.4.x requires worker-build 0.1.x
+          # Extract major.minor version
+          WORKER_MAJOR_MINOR=$(echo "$WORKER_VERSION" | cut -d'.' -f1,2)
+          echo "📦 Detected worker version: $WORKER_MAJOR_MINOR"
+          
+          if [ "$WORKER_MAJOR_MINOR" = "0.4" ] || [ "$WORKER_MAJOR_MINOR" = "0.5" ] || [ "$WORKER_MAJOR_MINOR" = "0.6" ]; then
+            # worker 0.4.x, 0.5.x, and 0.6.x use worker-build 0.1.x
             WORKER_BUILD_VERSION="0.1"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
             cargo install worker-build --version "^$WORKER_BUILD_VERSION"
-          elif [[ "$WORKER_VERSION" =~ ^0\.7\. ]]; then
+          elif [ "$WORKER_MAJOR_MINOR" = "0.7" ]; then
             # worker 0.7.x requires worker-build 0.2.x
             WORKER_BUILD_VERSION="0.2"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
@@ -93,7 +100,7 @@ jobs:
           
           echo ""
           echo "=== Tool Installation Summary ==="
-          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version) (📌 pinned to 0.2.105)"
+          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version)"
           echo "✅ worker-build: $(worker-build --version)"
           echo "✅ worker (in Cargo.toml): $WORKER_VERSION"
 
