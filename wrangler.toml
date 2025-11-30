@@ -4,6 +4,18 @@ compatibility_date = "2024-11-30"
 minify = true
 workers_dev = true
 
+# Enable logging and tracing
+observability = {
+  enabled = true
+}
+
+# Enable logpush for detailed logs
+logpush = true
+
+# Enable tail consumers for real-time logs
+[tail_consumers]
+service = "beacon"
+
 routes = [
   { pattern = "hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
   { pattern = "ava.game.naver.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
