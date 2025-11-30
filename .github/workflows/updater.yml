@@ -59,29 +59,32 @@ jobs:
           echo "🔄 Updating to latest stable versions..."
           echo "================================"
           
-          # Update all dependencies EXCEPT wasm-bindgen packages
-          echo "📦 Running cargo upgrade (excluding wasm-bindgen)..."
+          # Update all dependencies EXCEPT wasm-bindgen ecosystem in Cargo.toml
+          echo "📦 Running cargo upgrade (excluding wasm-bindgen ecosystem)..."
           cargo upgrade --exclude wasm-bindgen --exclude wasm-bindgen-futures
           
           echo "✅ Cargo.toml updated to latest stable versions"
           
-          # Pin wasm-bindgen to 0.2.105 for worker-build 0.1.x compatibility
+          # Pin wasm-bindgen ecosystem in Cargo.toml for worker 0.4.x compatibility
           echo ""
-          echo "📌 Pinning wasm-bindgen to 0.2.105..."
-          cargo update -p wasm-bindgen --precise 0.2.105
+          echo "📌 Pinning wasm-bindgen ecosystem in Cargo.toml..."
           
-          echo "📌 Pinning wasm-bindgen-futures to compatible version..."
-          # wasm-bindgen-futures 0.4.55 is compatible with wasm-bindgen 0.2.105
-          cargo update -p wasm-bindgen-futures --precise 0.4.55
+          # Use cargo add to set exact versions in Cargo.toml
+          echo "Setting wasm-bindgen = 0.2.105..."
+          cargo add wasm-bindgen@=0.2.105
           
-          echo "✅ wasm-bindgen packages pinned for compatibility"
+          echo "Setting wasm-bindgen-futures = 0.4.55..."
+          cargo add wasm-bindgen-futures@=0.4.55
           
-          # Regenerate Cargo.lock to match Cargo.toml
+          echo "✅ wasm-bindgen ecosystem pinned in Cargo.toml"
+          
+          # Now regenerate Cargo.lock to match the pinned Cargo.toml
           echo ""
-          echo "🔄 Finalizing Cargo.lock..."
-          cargo update
+          echo "🔄 Regenerating Cargo.lock..."
+          rm -f Cargo.lock
+          cargo generate-lockfile
           
-          echo "✅ All dependencies updated and synchronized"
+          echo "✅ Cargo.lock regenerated with matching versions"
       
       - name: Extract new versions
         id: new_versions
@@ -105,9 +108,9 @@ jobs:
           
           echo "New versions:"
           echo "  Cargo.toml:"
-          echo "    - wasm-bindgen: $WASM_BINDGEN_NEW (pinned)"
+          echo "    - wasm-bindgen: $WASM_BINDGEN_NEW (📌 pinned)"
           echo "    - worker: $WORKER_NEW"
-          echo "    - wasm-bindgen-futures: $WASM_FUTURES_NEW (pinned)"
+          echo "    - wasm-bindgen-futures: $WASM_FUTURES_NEW (📌 pinned)"
           echo ""
           echo "  Cargo.lock (verification):"
           echo "    - wasm-bindgen: $WASM_BINDGEN_LOCK"
