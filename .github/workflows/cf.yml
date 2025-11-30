@@ -32,7 +32,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-v3
+          key: ${{ runner.os }}-cargo-registry-${{ github.sha }}-v4
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
@@ -40,21 +40,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target/
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}-v3
+          key: ${{ runner.os }}-cargo-build-${{ github.sha }}-v4
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
-      - name: Read versions from Cargo files and install tools
+      - name: Read versions from Cargo.toml and install tools
         run: |
-          echo "=== Reading versions from Cargo.lock ==="
+          echo "=== Reading versions from Cargo.toml ==="
           
-          # Get wasm-bindgen version from Cargo.lock
-          WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
-          echo "📦 wasm-bindgen: $WASM_BINDGEN_VERSION (from Cargo.lock)"
-          
-          # Get worker version from Cargo.lock
-          WORKER_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2)
-          echo "📦 worker: $WORKER_VERSION (from Cargo.lock)"
+          # Get worker version from Cargo.toml
+          WORKER_VERSION=$(grep -A 1 'name = "worker"' Cargo.toml | grep 'version' | head -1 | cut -d'"' -f2 | sed 's/^=//' | sed 's/[~^]//' | xargs)
+          echo "📦 worker: $WORKER_VERSION (from Cargo.toml)"
           
           echo ""
           echo "=== Installing wasm-bindgen-cli ==="
@@ -82,16 +78,16 @@ jobs:
             # worker 0.4.x requires worker-build 0.1.x
             WORKER_BUILD_VERSION="0.1"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
-            cargo install worker-build --version "^$WORKER_BUILD_VERSION" --locked
+            cargo install worker-build --version "^$WORKER_BUILD_VERSION"
           elif [[ "$WORKER_VERSION" =~ ^0\.7\. ]]; then
             # worker 0.7.x requires worker-build 0.2.x
             WORKER_BUILD_VERSION="0.2"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
-            cargo install worker-build --version "^$WORKER_BUILD_VERSION" --locked
+            cargo install worker-build --version "^$WORKER_BUILD_VERSION"
           else
             # Fallback to latest for other versions
             echo "📦 worker $WORKER_VERSION - installing latest worker-build"
-            cargo install worker-build --locked
+            cargo install worker-build
           fi
           echo "✅ worker-build: $(worker-build --version)"
           
@@ -99,8 +95,7 @@ jobs:
           echo "=== Tool Installation Summary ==="
           echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version) (📌 pinned to 0.2.105)"
           echo "✅ worker-build: $(worker-build --version)"
-          echo "✅ worker (in Cargo.lock): $WORKER_VERSION"
-          echo "✅ wasm-bindgen (in Cargo.lock): $WASM_BINDGEN_VERSION"
+          echo "✅ worker (in Cargo.toml): $WORKER_VERSION"
 
       - name: Build with worker-build
         run: |
