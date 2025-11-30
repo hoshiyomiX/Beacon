@@ -58,19 +58,20 @@ jobs:
           
           echo ""
           echo "=== Installing wasm-bindgen-cli ==="
-          # Check if already installed with correct version
+          # Force wasm-bindgen-cli to 0.2.105 for worker-build 0.1.x compatibility
+          REQUIRED_WASM_VERSION="0.2.105"
+          
           if command -v wasm-bindgen &> /dev/null; then
             INSTALLED_WASM=$(wasm-bindgen --version | cut -d' ' -f2)
-            if [ "$INSTALLED_WASM" = "$WASM_BINDGEN_VERSION" ]; then
+            if [ "$INSTALLED_WASM" = "$REQUIRED_WASM_VERSION" ]; then
               echo "✅ wasm-bindgen-cli $INSTALLED_WASM already installed (cached)"
             else
-              echo "⚠️  Version mismatch: installed $INSTALLED_WASM, need $WASM_BINDGEN_VERSION"
-              echo "Installing correct version..."
-              cargo install --force wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+              echo "🔧 Installing wasm-bindgen-cli $REQUIRED_WASM_VERSION (required for worker-build 0.1.x)..."
+              cargo install --force wasm-bindgen-cli --version "$REQUIRED_WASM_VERSION"
             fi
           else
-            echo "Installing wasm-bindgen-cli $WASM_BINDGEN_VERSION..."
-            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+            echo "🔧 Installing wasm-bindgen-cli $REQUIRED_WASM_VERSION..."
+            cargo install wasm-bindgen-cli --version "$REQUIRED_WASM_VERSION"
           fi
           echo "✅ wasm-bindgen: $(wasm-bindgen --version)"
           
@@ -96,9 +97,10 @@ jobs:
           
           echo ""
           echo "=== Tool Installation Summary ==="
-          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version)"
+          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version) (📌 pinned to 0.2.105)"
           echo "✅ worker-build: $(worker-build --version)"
           echo "✅ worker (in Cargo.lock): $WORKER_VERSION"
+          echo "✅ wasm-bindgen (in Cargo.lock): $WASM_BINDGEN_VERSION"
 
       - name: Build with worker-build
         run: |
