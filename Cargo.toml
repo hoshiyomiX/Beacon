@@ -25,7 +25,7 @@ anyhow = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 regex = "1.11"
 once_cell = "1.21"
-wasm-bindgen = "0.2.99"
+wasm-bindgen = "0.2.106"
 wasm-bindgen-futures = "0.4.49"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
