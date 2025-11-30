@@ -1,0 +1,65 @@
+name: Update Cargo Dependencies
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  update-dependencies:
+    name: Update Cargo.lock
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update dependencies
+        run: |
+          # Update all dependencies to latest compatible versions
+          cargo update
+          
+          # Force rollback/pin specific critical dependencies
+          echo "Pinning critical dependencies..."
+          
+          # wasm-bindgen -> 0.2.105
+          cargo update -p wasm-bindgen --precise 0.2.105
+          
+          # worker -> 0.4.2
+          cargo update -p worker --precise 0.4.2
+          
+          # wasm-bindgen-futures -> 0.4.55
+          cargo update -p wasm-bindgen-futures --precise 0.4.55
+          
+          echo "Dependencies updated with exceptions applied."
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          git diff --exit-code Cargo.lock || echo "changes_detected=true" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.git-check.outputs.changes_detected == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update cargo dependencies (with exceptions)"
+          title: "chore: update cargo dependencies"
+          body: |
+            Manual update of Cargo dependencies.
+            
+            **Pinned Versions:**
+            - `wasm-bindgen`: 0.2.105
+            - `worker`: 0.4.2
+            - `wasm-bindgen-futures`: 0.4.55
+            
+            This PR updates all other dependencies while keeping critical WASM/Worker packages stable.
+          branch: cargo-update-beta
+          base: beta
+          delete-branch: true
