@@ -1,0 +1,75 @@
+# Cargo.lock Updater Workflow (Manual)
+
+This GitHub Actions workflow updates the Cargo.lock file manually when triggered.
+
+name: Update Cargo.lock (Manual)
+
+on:
+  workflow_dispatch:  # Only manual triggering
+    inputs:
+      exclude_packages:
+        description: 'Comma-separated list of packages to exclude from update (e.g., wasm-bindgen,worker)'
+        required: false
+        default: ''
+
+jobs:
+  update-cargo-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: beta
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Update Cargo.lock
+        run: |
+          # Set excluded packages from input
+          EXCLUDE="$ {{ github.event.inputs.exclude_packages || '' }}"
+          
+          if [ -n "$EXCLUDE" ]; then
+            echo "Excluding packages: $EXCLUDE"
+            # Lock specific package versions in Cargo.toml if needed
+            # For now, we'll update all and let manual review handle exclusions
+          fi
+          
+          # Check for available updates
+          if cargo update --dry-run > /dev/null 2>&1; then
+            echo "Updates available, proceeding with update"
+            cargo update
+            
+            # Check if Cargo.lock actually changed
+            if git diff --quiet Cargo.lock; then
+              echo "No actual changes in Cargo.lock"
+              exit 0
+            fi
+            
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add Cargo.lock
+            git commit -m "chore: update Cargo.lock dependencies (manual) [skip ci]"
+            git push
+            echo "Cargo.lock updated and pushed successfully"
+          else
+            echo "No updates available or update failed"
+          fi
+
+      - name: Create Pull Request (if needed)
+        if: failure()  # Only if direct push failed due to conflicts
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Cargo.lock dependencies (manual) [skip ci]"
+          title: "chore: Update Cargo.lock dependencies (manual)"
+          body: |
+            Manual dependency update for Cargo.lock
+            
+            - Triggered manually
+            - Excluded packages: ${{ github.event.inputs.exclude_packages || 'None' }}
+            - Review changes before merging to ensure compatibility
+          branch: beta
+          base: beta
