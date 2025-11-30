@@ -1,0 +1,60 @@
+name: Regenerate Cargo Lock
+
+on:
+  workflow_dispatch: # Allows manual trigger from the Actions tab
+
+jobs:
+  update-lockfile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # 1. Load latest files from repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          fetch-depth: 0
+
+      # 2. Setup Rust environment
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      # 3. Backup original Cargo.lock
+      - name: Backup Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            cp Cargo.lock Cargo.lock.bak
+            echo "✅ Original Cargo.lock backed up to Cargo.lock.bak"
+          else
+            echo "⚠️ No Cargo.lock found to backup"
+          fi
+
+      # 4. Execute cargo update
+      - name: Run cargo update
+        run: |
+          echo "🔄 Running cargo update..."
+          cargo update
+          
+          # Verify the update didn't break basic compilation (Dependency check)
+          echo "🕵️ Verifying build to avoid deploy errors..."
+          cargo check --locked || (echo "❌ Dependency check failed! Rolling back..." && mv Cargo.lock.bak Cargo.lock && exit 1)
+
+      # 5. Clean up backup before commit (Optional: keep it if you want it committed)
+      - name: Remove backup file
+        run: rm Cargo.lock.bak
+
+      # 6. Commit and Push changes
+      - name: Commit and Push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: regenerate Cargo.lock via workflow"
+          branch: beta
+          file_pattern: Cargo.lock
+          
