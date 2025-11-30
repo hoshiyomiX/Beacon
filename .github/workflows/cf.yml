@@ -44,29 +44,58 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
-      - name: Install build tools
+      - name: Read versions from Cargo files and install tools
         run: |
-          echo "=== Detecting wasm-bindgen version from Cargo.lock ==="
+          echo "=== Reading versions from Cargo.lock ==="
+          
+          # Get wasm-bindgen version from Cargo.lock
           WASM_BINDGEN_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2)
-          echo "Required wasm-bindgen: $WASM_BINDGEN_VERSION"
+          echo "📦 wasm-bindgen: $WASM_BINDGEN_VERSION (from Cargo.lock)"
           
-          echo "=== Installing wasm-bindgen-cli ==="
-          if ! command -v wasm-bindgen &> /dev/null || [ "$(wasm-bindgen --version | cut -d' ' -f2)" != "$WASM_BINDGEN_VERSION" ]; then
-            cargo install --force wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
-          else
-            echo "✅ wasm-bindgen-cli already installed: $(wasm-bindgen --version)"
-          fi
-          
-          echo "=== Detecting worker version from Cargo.lock ==="
+          # Get worker version from Cargo.lock
           WORKER_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2)
-          echo "Detected worker: $WORKER_VERSION"
+          echo "📦 worker: $WORKER_VERSION (from Cargo.lock)"
           
-          echo "=== Installing latest stable worker-build ==="
-          cargo install --force --locked worker-build
-          echo "✅ Installed worker-build: $(worker-build --version)"
+          echo ""
+          echo "=== Installing wasm-bindgen-cli ==="
+          # Check if already installed with correct version
+          if command -v wasm-bindgen &> /dev/null; then
+            INSTALLED_WASM=$(wasm-bindgen --version | cut -d' ' -f2)
+            if [ "$INSTALLED_WASM" = "$WASM_BINDGEN_VERSION" ]; then
+              echo "✅ wasm-bindgen-cli $INSTALLED_WASM already installed (cached)"
+            else
+              echo "⚠️  Version mismatch: installed $INSTALLED_WASM, need $WASM_BINDGEN_VERSION"
+              echo "Installing correct version..."
+              cargo install --force wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+            fi
+          else
+            echo "Installing wasm-bindgen-cli $WASM_BINDGEN_VERSION..."
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+          echo "✅ wasm-bindgen: $(wasm-bindgen --version)"
+          
+          echo ""
+          echo "=== Installing worker-build ==="
+          # Always install latest worker-build (it auto-detects worker version)
+          if command -v worker-build &> /dev/null; then
+            echo "🔄 Updating worker-build to latest..."
+            cargo install --force --locked worker-build
+          else
+            echo "Installing worker-build..."
+            cargo install --locked worker-build
+          fi
+          echo "✅ worker-build: $(worker-build --version)"
+          
+          echo ""
+          echo "=== Tool Installation Summary ==="
+          echo "✅ wasm-bindgen-cli: $(wasm-bindgen --version)"
+          echo "✅ worker-build: $(worker-build --version)"
+          echo "✅ worker (in Cargo.lock): $WORKER_VERSION"
 
       - name: Build with worker-build
-        run: worker-build --release
+        run: |
+          echo "=== Building Cloudflare Worker ==="
+          worker-build --release
         env:
           CARGO_INCREMENTAL: 1
 
