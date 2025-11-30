@@ -58,17 +58,8 @@ jobs:
           echo "🔄 Updating to latest stable versions..."
           echo "================================"
           
-          # Update critical dependencies to latest stable in Cargo.toml
-          echo "📦 Updating wasm-bindgen..."
-          cargo upgrade wasm-bindgen
-          
-          echo "📦 Updating wasm-bindgen-futures..."
-          cargo upgrade wasm-bindgen-futures
-          
-          echo "📦 Updating worker..."
-          cargo upgrade worker
-          
-          echo "📦 Updating all other dependencies..."
+          # Update all dependencies to latest stable versions
+          echo "📦 Running cargo upgrade..."
           cargo upgrade
           
           echo "✅ Cargo.toml updated to latest stable versions"
