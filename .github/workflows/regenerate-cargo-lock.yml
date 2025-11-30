@@ -3,15 +3,15 @@ name: Regenerate Cargo Lock
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   update-lockfile:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-
     steps:
-      # 1. Load latest files from repo
+      # 1. Load latest files from repo (beta branch)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -25,45 +25,50 @@ jobs:
           toolchain: stable
           override: true
 
-      # 3. Backup & Update
-      - name: Update Dependencies
+      # 3. Backup & Execute Update
+      - name: Update and Verify
         id: update
         run: |
-          # Backup
+          # Backup original
           cp Cargo.lock Cargo.lock.bak
           
-          # Update
-          echo "🔄 Running cargo update..."
+          echo "🔄 Executing cargo update..."
           cargo update
-          
-          # Safety Check: Verify dependencies match and project builds
+
+          # Check if file actually changed
+          if git diff --quiet Cargo.lock; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "✅ No dependency updates available. Cleaning up..."
+            rm Cargo.lock.bak
+            exit 0
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+          # Verify Dependency Health (Avoid deploy error)
           echo "🛡️ Verifying build health..."
-          if cargo check; then
-            echo "✅ Check passed."
-            rm Cargo.lock.bak # Clean up backup only if successful
+          if cargo check --locked; then
+            echo "✅ Build verification passed."
+            rm Cargo.lock.bak
           else
             echo "❌ Dependency check failed! Rolling back..."
             mv Cargo.lock.bak Cargo.lock
             exit 1
           fi
 
-      # 4. Create Pull Request
+      # 4. Create Pull Request (Only if changes exist)
       - name: Create Pull Request
+        if: steps.update.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore: regenerate Cargo.lock"
-          title: "chore: Update Cargo.lock dependencies"
+          commit-message: "chore(deps): update Cargo.lock"
+          title: "chore: Update Cargo.lock"
           body: |
-            This PR regenerates `Cargo.lock` to the latest compatible versions.
+            Automated update of `Cargo.lock`.
             
-            **Automated Workflow:**
-            1. Checked out `beta`
-            2. Backed up `Cargo.lock`
-            3. Ran `cargo update`
-            4. Ran `cargo check` to ensure no immediate build errors
-            
-            Please review the changes before merging to avoid deploy errors.
+            - Ran `cargo update`
+            - Verified via `cargo check`
           branch: chore/update-cargo-lock
           base: beta
           delete-branch: true
