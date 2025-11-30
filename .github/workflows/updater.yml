@@ -60,13 +60,13 @@ jobs:
           
           # Update critical dependencies to latest stable in Cargo.toml
           echo "📦 Updating wasm-bindgen..."
-          cargo upgrade --incompatible wasm-bindgen
+          cargo upgrade wasm-bindgen
           
           echo "📦 Updating wasm-bindgen-futures..."
-          cargo upgrade --incompatible wasm-bindgen-futures
+          cargo upgrade wasm-bindgen-futures
           
           echo "📦 Updating worker..."
-          cargo upgrade --incompatible worker
+          cargo upgrade worker
           
           echo "📦 Updating all other dependencies..."
           cargo upgrade
