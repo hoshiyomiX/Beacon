@@ -56,8 +56,12 @@ jobs:
           fi
           echo "Verified: $INSTALLED"
           
-          echo "=== Installing worker-build 0.0.11 (for worker 0.4.0) ==="
-          cargo install --force worker-build --version 0.0.11
+          echo "=== Detecting worker version ==="
+          WORKER_VERSION=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "worker"' | grep -B 1 'source = "registry' | grep 'version' | head -1 | cut -d'"' -f2)
+          echo "Detected worker version: $WORKER_VERSION"
+          
+          echo "=== Installing worker-build (latest stable) ==="
+          cargo install --force worker-build
           worker-build --version
 
       - name: Build
