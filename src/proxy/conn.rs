@@ -41,6 +41,156 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("socket closed")
 }
 
+/// WASM-compatible bidirectional copy implementation
+/// Replaces tokio::io::copy_bidirectional for Cloudflare Workers compatibility
+async fn copy_bidirectional_wasm<A, B>(
+    a: &mut A,
+    b: &mut B,
+) -> std::io::Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    use futures_util::future::FutureExt;
+
+    let mut a_to_b: u64 = 0;
+    let mut b_to_a: u64 = 0;
+    let mut buf_a = vec![0u8; 8192];
+    let mut buf_b = vec![0u8; 8192];
+
+    loop {
+        let a_read = a.read(&mut buf_a).fuse();
+        let b_read = b.read(&mut buf_b).fuse();
+
+        futures_util::pin_mut!(a_read, b_read);
+
+        match futures_util::future::select(a_read, b_read).await {
+            futures_util::future::Either::Left((result, b_read)) => {
+                match result {
+                    Ok(0) => {
+                        // A reached EOF, shutdown write side of B
+                        let _ = b.shutdown().await;
+                        // Continue draining B -> A
+                        loop {
+                            match b_read.await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                            match b.read(&mut buf_b).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        b.write_all(&buf_a[..n]).await?;
+                        a_to_b += n as u64;
+                    }
+                    Err(e) if is_benign_error(&e.to_string()) => {
+                        // A closed, continue draining B
+                        let _ = b.shutdown().await;
+                        loop {
+                            match b_read.await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                            match b.read(&mut buf_b).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            futures_util::future::Either::Right((result, a_read)) => {
+                match result {
+                    Ok(0) => {
+                        // B reached EOF, shutdown write side of A
+                        let _ = a.shutdown().await;
+                        // Continue draining A -> B
+                        loop {
+                            match a_read.await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                            match a.read(&mut buf_a).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        a.write_all(&buf_b[..n]).await?;
+                        b_to_a += n as u64;
+                    }
+                    Err(e) if is_benign_error(&e.to_string()) => {
+                        // B closed, continue draining A
+                        let _ = a.shutdown().await;
+                        loop {
+                            match a_read.await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                            match a.read(&mut buf_a).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+
+    Ok((a_to_b, b_to_a))
+}
+
 impl<'a> ProxyStream<'a> {
     pub fn new(config: Config, ws: &'a WebSocket, events: EventStream<'a>) -> Self {
         let buffer = BytesMut::with_capacity(MAX_BUFFER_SIZE);
@@ -253,8 +403,8 @@ impl<'a> ProxyStream<'a> {
 
         console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
 
-        // CRITICAL FIX: Wrap copy_bidirectional to catch JS-level network errors
-        match tokio::io::copy_bidirectional(self, &mut remote_socket).await {
+        // WASM-compatible bidirectional copy - replaces tokio::io::copy_bidirectional
+        match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
                     &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
