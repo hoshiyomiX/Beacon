@@ -1,0 +1,172 @@
+name: Regenerate Cargo.lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_cache:
+        description: 'Clean cargo cache before regenerating'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  regenerate-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: false
+
+      - name: Clean cargo cache (optional)
+        if: ${{ inputs.clean_cache }}
+        run: |
+          echo "🧹 Cleaning cargo cache..."
+          cargo clean
+          rm -rf ~/.cargo/registry/cache
+          rm -rf ~/.cargo/registry/index
+          echo "✅ Cache cleaned"
+
+      - name: Backup and remove existing Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "📦 Backing up existing Cargo.lock..."
+            cp Cargo.lock Cargo.lock.backup
+            rm Cargo.lock
+            echo "✅ Existing Cargo.lock removed"
+          else
+            echo "ℹ️  No Cargo.lock found (already deleted)"
+          fi
+
+      - name: Regenerate Cargo.lock
+        id: regenerate
+        run: |
+          echo "🔄 Generating new Cargo.lock from Cargo.toml..."
+          
+          # Generate fresh lockfile
+          if cargo generate-lockfile; then
+            echo "✅ Cargo.lock generated successfully"
+            echo "lockfile_generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to generate Cargo.lock"
+            
+            # Restore backup if exists
+            if [ -f Cargo.lock.backup ]; then
+              echo "⚠️  Restoring backup..."
+              mv Cargo.lock.backup Cargo.lock
+            fi
+            exit 1
+          fi
+
+      - name: Verify build with new lockfile
+        id: verify
+        run: |
+          echo "🛡️  Verifying build with new Cargo.lock..."
+          
+          if cargo check; then
+            echo "✅ Build verification passed"
+            echo "build_verified=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Build verification failed"
+            
+            # Restore backup if exists
+            if [ -f Cargo.lock.backup ]; then
+              echo "⚠️  Restoring backup..."
+              mv Cargo.lock.backup Cargo.lock
+            else
+              rm -f Cargo.lock
+            fi
+            exit 1
+          fi
+
+      - name: Show dependency summary
+        if: steps.regenerate.outputs.lockfile_generated == 'true'
+        run: |
+          echo "📋 Top-level dependencies:"
+          cargo tree --depth 1
+          echo ""
+          echo "📊 Cargo.lock stats:"
+          if [ -f Cargo.lock ]; then
+            echo "   Total packages: $(grep -c "^name = " Cargo.lock || echo 0)"
+            echo "   File size: $(du -h Cargo.lock | cut -f1)"
+          fi
+
+      - name: Clean up backup
+        if: always()
+        run: |
+          if [ -f Cargo.lock.backup ]; then
+            rm Cargo.lock.backup
+            echo "🧹 Backup cleaned up"
+          fi
+
+      - name: Create Pull Request
+        if: steps.verify.outputs.build_verified == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore: Regenerate Cargo.lock
+            
+            Generated fresh Cargo.lock from Cargo.toml
+            Build verification: ✅ PASSED
+          title: "chore: Regenerate Cargo.lock"
+          body: |
+            ## Cargo.lock Regeneration
+            
+            This PR contains a freshly regenerated `Cargo.lock` file.
+            
+            ### What Changed
+            - 🔄 Generated new `Cargo.lock` from `Cargo.toml`
+            - ✅ Build verification passed with `cargo check`
+            - 📦 All dependencies resolved
+            
+            ### Verification Steps
+            - ✅ Lockfile generated successfully
+            - ✅ Build check passed
+            - ✅ Dependency tree validated
+            
+            ### Cache Status
+            ${{ inputs.clean_cache && '🧹 Cargo cache was cleaned before regeneration' || '📦 Used existing cargo cache' }}
+            
+            **Ready for review and merge to `beta` branch.**
+            
+            ---
+            *Automated by GitHub Actions - Cargo.lock Regenerator*
+          branch: chore/regenerate-cargo-lock-${{ github.run_number }}
+          base: beta
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
+            rust
+            cargo-lock
+          assignees: hoshiyomiX
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== REGENERATION SUMMARY ==="
+          if [ "${{ steps.verify.outputs.build_verified }}" = "true" ]; then
+            echo "✅ SUCCESS: Cargo.lock regenerated and verified"
+            echo "   📄 New lockfile created from Cargo.toml"
+            echo "   ✅ Build verification: PASSED"
+            echo "   🔀 PR created for review"
+          else
+            echo "❌ FAILED: Could not regenerate Cargo.lock"
+            echo "   Check the logs above for details"
+          fi
+          echo "============================"
