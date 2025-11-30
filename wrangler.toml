@@ -4,18 +4,6 @@ compatibility_date = "2024-11-30"
 minify = true
 workers_dev = true
 
-# Enable logging and tracing
-observability = {
-  enabled = true
-}
-
-# Enable logpush for detailed logs
-logpush = true
-
-# Enable tail consumers for real-time logs
-[tail_consumers]
-service = "beacon"
-
 routes = [
   { pattern = "hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
   { pattern = "ava.game.naver.com.hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
@@ -32,6 +20,12 @@ routes = [
 [[kv_namespaces]]
 binding = "library"
 id = "a9f61fcc3abf48af91a5924027ee1a1a"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[env.dev]
+build = { command = "cargo install -q worker-build && worker-build --dev" }
 
 [vars]
 
