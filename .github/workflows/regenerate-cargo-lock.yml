@@ -8,16 +8,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
 
     steps:
-      # 1. Load latest files from repo
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. Setup Rust
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -25,45 +23,50 @@ jobs:
           toolchain: stable
           override: true
 
-      # 3. Backup & Update
-      - name: Update Dependencies
+      - name: Check and regenerate Cargo.lock
         id: update
         run: |
-          # Backup
-          cp Cargo.lock Cargo.lock.bak
-          
-          # Update
-          echo "🔄 Running cargo update..."
-          cargo update
-          
-          # Safety Check: Verify dependencies match and project builds
-          echo "🛡️ Verifying build health..."
-          if cargo check; then
-            echo "✅ Check passed."
-            rm Cargo.lock.bak # Clean up backup only if successful
+          if [ -f Cargo.lock ]; then
+            echo "📦 Backing up existing Cargo.lock..."
+            cp Cargo.lock Cargo.lock.bak
+            rm Cargo.lock
           else
-            echo "❌ Dependency check failed! Rolling back..."
-            mv Cargo.lock.bak Cargo.lock
+            echo "⚠️  Cargo.lock missing - will generate new one"
+          fi
+          
+          echo "🔄 Generating Cargo.lock..."
+          cargo generate-lockfile
+          
+          echo "🛡️  Verifying build..."
+          if cargo check; then
+            echo "✅ Build verification passed"
+            rm -f Cargo.lock.bak
+          else
+            echo "❌ Build failed! Rolling back..."
+            if [ -f Cargo.lock.bak ]; then
+              mv Cargo.lock.bak Cargo.lock
+            else
+              rm -f Cargo.lock
+            fi
             exit 1
           fi
 
-      # 4. Create Pull Request
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore: regenerate Cargo.lock"
-          title: "chore: Update Cargo.lock dependencies"
-          body: |
-            This PR regenerates `Cargo.lock` to the latest compatible versions.
+      - name: Commit and push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          if [ -f Cargo.lock ]; then
+            git add Cargo.lock
             
-            **Automated Workflow:**
-            1. Checked out `beta`
-            2. Backed up `Cargo.lock`
-            3. Ran `cargo update`
-            4. Ran `cargo check` to ensure no immediate build errors
-            
-            Please review the changes before merging to avoid deploy errors.
-          branch: chore/update-cargo-lock
-          base: beta
-          delete-branch: true
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: Regenerate Cargo.lock
+
+Generated fresh Cargo.lock from Cargo.toml
+Build verification: ✅ PASSED"
+              git push origin beta
+              echo "✅ Cargo.lock committed to beta"
+            else
+              echo "ℹ️  No changes to commit"
+            fi
+          fi
