@@ -79,8 +79,14 @@ jobs:
       - name: Run wasm-bindgen
         run: |
           echo "=== Running wasm-bindgen ==="
-          mkdir -p build
-          wasm-bindgen --target bundler --out-dir ./build ./target/wasm32-unknown-unknown/release/beacon.wasm
+          mkdir -p build/worker
+          wasm-bindgen --target bundler --out-dir ./build/worker ./target/wasm32-unknown-unknown/release/beacon.wasm
+          
+          # Create shim.mjs to export the worker
+          cat > build/worker/shim.mjs << 'EOF'
+          import * as beacon from './beacon.js';
+          export default beacon;
+          EOF
 
       - name: Remove build command from wrangler.toml
         run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
