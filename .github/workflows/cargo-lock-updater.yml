@@ -1,0 +1,176 @@
+name: Cargo.lock Updater
+
+# Simple and reliable Cargo.lock updater
+# Regenerates Cargo.lock from Cargo.toml without modifying dependencies
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight UTC
+
+jobs:
+  update-cargo-lock:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout beta branch
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      
+      - name: Backup Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            cp Cargo.lock Cargo.lock.backup
+            echo "✅ Backed up existing Cargo.lock"
+          else
+            echo "ℹ️  No existing Cargo.lock to backup"
+          fi
+      
+      - name: Remove and regenerate Cargo.lock
+        id: regenerate
+        run: |
+          echo "🔄 Regenerating Cargo.lock from Cargo.toml..."
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          echo "✅ Cargo.lock regenerated successfully"
+      
+      - name: Verify build compatibility
+        id: verify
+        run: |
+          echo "🔨 Verifying build with new Cargo.lock..."
+          cargo check --target wasm32-unknown-unknown --release
+          echo "✅ Build verification passed"
+      
+      - name: Extract key dependency versions
+        id: versions
+        run: |
+          echo "📊 Extracting dependency versions from Cargo.lock..."
+          
+          WASM_BINDGEN=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          WORKER=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          WASM_FUTURES=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "wasm-bindgen-futures"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          
+          echo "wasm_bindgen=$WASM_BINDGEN" >> $GITHUB_OUTPUT
+          echo "worker=$WORKER" >> $GITHUB_OUTPUT
+          echo "wasm_futures=$WASM_FUTURES" >> $GITHUB_OUTPUT
+          
+          echo "Key dependencies in new Cargo.lock:"
+          echo "  - wasm-bindgen: $WASM_BINDGEN"
+          echo "  - worker: $WORKER"
+          echo "  - wasm-bindgen-futures: $WASM_FUTURES"
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Regeneration or verification failed - Rolling back..."
+          
+          if [ -f Cargo.lock.backup ]; then
+            cp Cargo.lock.backup Cargo.lock
+            echo "✅ Restored Cargo.lock from backup"
+          fi
+          
+          echo "## ❌ Cargo.lock Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The Cargo.lock regeneration failed and has been rolled back." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** Cargo.toml was not modified. Only Cargo.lock regeneration was attempted." >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+      
+      - name: Check for changes
+        id: changes
+        run: |
+          if ! git diff --exit-code Cargo.lock; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Cargo.lock has changes"
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  Cargo.lock is already up-to-date"
+          fi
+      
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: regenerate Cargo.lock"
+          title: "🔄 Regenerate Cargo.lock [beta]"
+          body: |
+            ## 🔄 Cargo.lock Regenerated
+            
+            **Target Branch:** `beta`
+            **Action:** Cargo.lock regenerated from current Cargo.toml
+            
+            ### What Changed
+            - ✅ Cargo.lock regenerated using `cargo generate-lockfile`
+            - ℹ️  Cargo.toml **not modified** - only lockfile updated
+            - ✅ Build verification passed for wasm32-unknown-unknown target
+            
+            ### Key Dependencies
+            | Package | Version |
+            |---------|----------|
+            | **wasm-bindgen** | `${{ steps.versions.outputs.wasm_bindgen }}` |
+            | **worker** | `${{ steps.versions.outputs.worker }}` |
+            | **wasm-bindgen-futures** | `${{ steps.versions.outputs.wasm_futures }}` |
+            
+            ### Why This PR?
+            This ensures Cargo.lock is synchronized with Cargo.toml and includes:
+            - Updated dependency resolution
+            - Security patches in sub-dependencies
+            - Optimized dependency tree
+            
+            ### Verification
+            - ✅ Cargo.lock regenerated successfully
+            - ✅ Build check passed
+            - ✅ All dependencies resolved
+            
+            ### Next Steps
+            1. Review the lockfile changes
+            2. Merge to apply the updated Cargo.lock
+            3. Deployment workflow will use the new lockfile
+            
+            ---
+            *Auto-generated by cargo-lock-updater.yml workflow*
+            *Triggered by: @${{ github.actor }}*
+          branch: chore/regenerate-cargo-lock-${{ github.run_number }}
+          base: beta
+          labels: dependencies, cargo-lock, automated
+          delete-branch: true
+      
+      - name: Success Summary
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          echo "## ✅ Cargo.lock Successfully Regenerated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Process" >> $GITHUB_STEP_SUMMARY
+          echo "1. Removed old Cargo.lock" >> $GITHUB_STEP_SUMMARY
+          echo "2. Ran \`cargo generate-lockfile\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Verified build compatibility" >> $GITHUB_STEP_SUMMARY
+          echo "4. Created pull request" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Key Dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen:** ${{ steps.versions.outputs.wasm_bindgen }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **worker:** ${{ steps.versions.outputs.worker }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen-futures:** ${{ steps.versions.outputs.wasm_futures }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ℹ️  Note" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow only updates Cargo.lock. To update dependencies in Cargo.toml, use the dependency-update.yml workflow." >> $GITHUB_STEP_SUMMARY
+      
+      - name: No Changes Summary
+        if: steps.changes.outputs.changed == 'false'
+        run: |
+          echo "## ℹ️  Cargo.lock Already Up-to-Date" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The regenerated Cargo.lock matches the existing file. No changes needed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current Key Dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen:** ${{ steps.versions.outputs.wasm_bindgen }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **worker:** ${{ steps.versions.outputs.worker }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen-futures:** ${{ steps.versions.outputs.wasm_futures }}" >> $GITHUB_STEP_SUMMARY
