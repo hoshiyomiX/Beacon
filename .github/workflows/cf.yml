@@ -81,13 +81,14 @@ jobs:
           WORKER_MAJOR_MINOR=$(echo "$WORKER_VERSION" | cut -d'.' -f1,2)
           echo "📦 Detected worker version: $WORKER_MAJOR_MINOR"
           
-          if [ "$WORKER_MAJOR_MINOR" = "0.4" ] || [ "$WORKER_MAJOR_MINOR" = "0.5" ] || [ "$WORKER_MAJOR_MINOR" = "0.6" ]; then
-            # worker 0.4.x, 0.5.x, and 0.6.x use worker-build 0.1.x
+          # worker 0.6.x is compatible with worker-build 0.2.x (which fixes the --version bug)
+          if [ "$WORKER_MAJOR_MINOR" = "0.4" ] || [ "$WORKER_MAJOR_MINOR" = "0.5" ]; then
+            # worker 0.4.x and 0.5.x use worker-build 0.1.x
             WORKER_BUILD_VERSION="0.1"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
             cargo install worker-build --version "^$WORKER_BUILD_VERSION"
-          elif [ "$WORKER_MAJOR_MINOR" = "0.7" ]; then
-            # worker 0.7.x requires worker-build 0.2.x
+          elif [ "$WORKER_MAJOR_MINOR" = "0.6" ] || [ "$WORKER_MAJOR_MINOR" = "0.7" ]; then
+            # worker 0.6.x and 0.7.x use worker-build 0.2.x
             WORKER_BUILD_VERSION="0.2"
             echo "📦 worker $WORKER_VERSION detected - using worker-build $WORKER_BUILD_VERSION.x"
             cargo install worker-build --version "^$WORKER_BUILD_VERSION"
