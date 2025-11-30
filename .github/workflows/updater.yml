@@ -3,6 +3,7 @@ name: Dependency Updater
 # Updates dependencies to latest stable versions
 # Ensures version consistency between Cargo.toml and Cargo.lock
 # Auto-rollback on failure
+# Exception: wasm-bindgen pinned to 0.2.105 for worker-build 0.1.x compatibility
 
 on:
   workflow_dispatch:
@@ -58,20 +59,29 @@ jobs:
           echo "🔄 Updating to latest stable versions..."
           echo "================================"
           
-          # Update all dependencies to latest stable versions
-          echo "📦 Running cargo upgrade..."
-          cargo upgrade
+          # Update all dependencies EXCEPT wasm-bindgen packages
+          echo "📦 Running cargo upgrade (excluding wasm-bindgen)..."
+          cargo upgrade --exclude wasm-bindgen --exclude wasm-bindgen-futures
           
           echo "✅ Cargo.toml updated to latest stable versions"
           
+          # Pin wasm-bindgen to 0.2.105 for worker-build 0.1.x compatibility
+          echo ""
+          echo "📌 Pinning wasm-bindgen to 0.2.105..."
+          cargo update -p wasm-bindgen --precise 0.2.105
+          
+          echo "📌 Pinning wasm-bindgen-futures to compatible version..."
+          # wasm-bindgen-futures 0.4.55 is compatible with wasm-bindgen 0.2.105
+          cargo update -p wasm-bindgen-futures --precise 0.4.55
+          
+          echo "✅ wasm-bindgen packages pinned for compatibility"
+          
           # Regenerate Cargo.lock to match Cargo.toml
           echo ""
-          echo "🔄 Regenerating Cargo.lock..."
-          rm -f Cargo.lock
-          cargo generate-lockfile
+          echo "🔄 Finalizing Cargo.lock..."
           cargo update
           
-          echo "✅ Cargo.lock regenerated with matching versions"
+          echo "✅ All dependencies updated and synchronized"
       
       - name: Extract new versions
         id: new_versions
@@ -95,9 +105,9 @@ jobs:
           
           echo "New versions:"
           echo "  Cargo.toml:"
-          echo "    - wasm-bindgen: $WASM_BINDGEN_NEW"
+          echo "    - wasm-bindgen: $WASM_BINDGEN_NEW (pinned)"
           echo "    - worker: $WORKER_NEW"
-          echo "    - wasm-bindgen-futures: $WASM_FUTURES_NEW"
+          echo "    - wasm-bindgen-futures: $WASM_FUTURES_NEW (pinned)"
           echo ""
           echo "  Cargo.lock (verification):"
           echo "    - wasm-bindgen: $WASM_BINDGEN_LOCK"
@@ -193,14 +203,18 @@ jobs:
             
             ### Version Changes
             
-            | Package | Old Version | New Version |
-            |---------|-------------|-------------|
-            | **wasm-bindgen** | `${{ steps.current_versions.outputs.wasm_bindgen_old }}` | `${{ steps.new_versions.outputs.wasm_bindgen_new }}` |
-            | **worker** | `${{ steps.current_versions.outputs.worker_old }}` | `${{ steps.new_versions.outputs.worker_new }}` |
-            | **wasm-bindgen-futures** | `${{ steps.current_versions.outputs.wasm_futures_old }}` | `${{ steps.new_versions.outputs.wasm_futures_new }}` |
+            | Package | Old Version | New Version | Status |
+            |---------|-------------|-------------|--------|
+            | **wasm-bindgen** | `${{ steps.current_versions.outputs.wasm_bindgen_old }}` | `${{ steps.new_versions.outputs.wasm_bindgen_new }}` | 📌 Pinned |
+            | **worker** | `${{ steps.current_versions.outputs.worker_old }}` | `${{ steps.new_versions.outputs.worker_new }}` | ⬆️ Updated |
+            | **wasm-bindgen-futures** | `${{ steps.current_versions.outputs.wasm_futures_old }}` | `${{ steps.new_versions.outputs.wasm_futures_new }}` | 📌 Pinned |
+            
+            ### 📌 Pinned Versions
+            - `wasm-bindgen: 0.2.105` - Required for worker-build 0.1.x compatibility
+            - `wasm-bindgen-futures: 0.4.55` - Compatible with wasm-bindgen 0.2.105
             
             ### Verification Status
-            - ✅ Cargo.toml updated to latest stable versions
+            - ✅ Cargo.toml updated (excluding pinned packages)
             - ✅ Cargo.lock regenerated with matching versions
             - ✅ Version consistency verified (Cargo.toml ↔ Cargo.lock)
             - ✅ Build check passed for wasm32-unknown-unknown target
@@ -214,8 +228,8 @@ jobs:
             ```
             
             ### Deployment Compatibility
-            - Latest `wasm-bindgen-cli` will match `wasm-bindgen` version
-            - Latest `worker-build` will match `worker` version
+            - `wasm-bindgen-cli 0.2.105` matches `wasm-bindgen 0.2.105`
+            - `worker-build 0.1.x` compatible with `worker 0.4.x`
             - All sub-dependencies resolved to stable versions
             
             ### Next Steps
@@ -240,13 +254,14 @@ jobs:
           echo "- **Mode:** Latest stable versions only" >> $GITHUB_STEP_SUMMARY
           echo "- **Source:** Cargo.toml (updated first)" >> $GITHUB_STEP_SUMMARY
           echo "- **Generated:** Cargo.lock (regenerated to match)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Exception:** wasm-bindgen pinned to 0.2.105" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### New Versions" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | Version |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|---------|" >> $GITHUB_STEP_SUMMARY
-          echo "| wasm-bindgen | ${{ steps.new_versions.outputs.wasm_bindgen_new }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| worker | ${{ steps.new_versions.outputs.worker_new }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| wasm-bindgen-futures | ${{ steps.new_versions.outputs.wasm_futures_new }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Version | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| wasm-bindgen | ${{ steps.new_versions.outputs.wasm_bindgen_new }} | 📌 Pinned |" >> $GITHUB_STEP_SUMMARY
+          echo "| worker | ${{ steps.new_versions.outputs.worker_new }} | ⬆️ Updated |" >> $GITHUB_STEP_SUMMARY
+          echo "| wasm-bindgen-futures | ${{ steps.new_versions.outputs.wasm_futures_new }} | 📌 Pinned |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Verification" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Version matching verified" >> $GITHUB_STEP_SUMMARY
@@ -261,6 +276,6 @@ jobs:
           echo "All dependencies are already at latest stable versions." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Current Versions" >> $GITHUB_STEP_SUMMARY
-          echo "- wasm-bindgen: ${{ steps.current_versions.outputs.wasm_bindgen_old }}" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen: ${{ steps.current_versions.outputs.wasm_bindgen_old }} (📌 pinned)" >> $GITHUB_STEP_SUMMARY
           echo "- worker: ${{ steps.current_versions.outputs.worker_old }}" >> $GITHUB_STEP_SUMMARY
-          echo "- wasm-bindgen-futures: ${{ steps.current_versions.outputs.wasm_futures_old }}" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen-futures: ${{ steps.current_versions.outputs.wasm_futures_old }} (📌 pinned)" >> $GITHUB_STEP_SUMMARY
