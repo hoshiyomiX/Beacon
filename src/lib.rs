@@ -102,9 +102,9 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
 }
 
 async fn get_response_from_url(url: String) -> Result<Response> {
-    let req = Fetch::Url(Url::parse(url.as_str())?);
-    let mut res = req.send().await?;
-    Response::from_html(res.text().await?)
+    let request = Request::new(&url, Method::Get)?;
+    let mut response = Fetch::Request(request).send().await?;
+    Response::from_html(response.text().await?)
 }
 
 async fn fe(_: Request, cx: RouteContext<Config>) -> Result<Response> {
@@ -138,8 +138,8 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
 
         if proxy_kv_str.len() == 0 {
             console_log!("getting proxy kv from github...");
-            let req = Fetch::Url(Url::parse("https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json")?);
-            let mut res = req.send().await?;
+            let request = Request::new("https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json", Method::Get)?;
+            let mut res = Fetch::Request(request).send().await?;
             if res.status_code() == 200 {
                 proxy_kv_str = res.text().await?.to_string();
                 kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?; // 24 hours
