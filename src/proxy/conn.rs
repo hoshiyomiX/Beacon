@@ -59,28 +59,19 @@ where
     let mut buf_b = vec![0u8; 8192];
 
     loop {
-        let a_read = a.read(&mut buf_a).fuse();
-        let b_read = b.read(&mut buf_b).fuse();
+        // Create fresh futures each iteration to avoid borrow checker issues
+        let a_fut = a.read(&mut buf_a);
+        let b_fut = b.read(&mut buf_b);
 
-        futures_util::pin_mut!(a_read, b_read);
+        futures_util::pin_mut!(a_fut, b_fut);
 
-        match futures_util::future::select(a_read, b_read).await {
-            futures_util::future::Either::Left((result, b_read)) => {
-                match result {
+        match futures_util::future::select(a_fut, b_fut).await {
+            futures_util::future::Either::Left((a_result, _)) => {
+                match a_result {
                     Ok(0) => {
-                        // A reached EOF, shutdown write side of B
+                        // A reached EOF, shutdown write side of B and drain remaining data from B
                         let _ = b.shutdown().await;
-                        // Continue draining B -> A
                         loop {
-                            match b_read.await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
-                                    b_to_a += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
                             match b.read(&mut buf_b).await {
                                 Ok(0) => break,
                                 Ok(n) => {
@@ -98,18 +89,9 @@ where
                         a_to_b += n as u64;
                     }
                     Err(e) if is_benign_error(&e.to_string()) => {
-                        // A closed, continue draining B
+                        // A closed with benign error, drain B
                         let _ = b.shutdown().await;
                         loop {
-                            match b_read.await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
-                                    b_to_a += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
                             match b.read(&mut buf_b).await {
                                 Ok(0) => break,
                                 Ok(n) => {
@@ -125,22 +107,12 @@ where
                     Err(e) => return Err(e),
                 }
             }
-            futures_util::future::Either::Right((result, a_read)) => {
-                match result {
+            futures_util::future::Either::Right((b_result, _)) => {
+                match b_result {
                     Ok(0) => {
-                        // B reached EOF, shutdown write side of A
+                        // B reached EOF, shutdown write side of A and drain remaining data from A
                         let _ = a.shutdown().await;
-                        // Continue draining A -> B
                         loop {
-                            match a_read.await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
-                                    a_to_b += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
                             match a.read(&mut buf_a).await {
                                 Ok(0) => break,
                                 Ok(n) => {
@@ -158,18 +130,9 @@ where
                         b_to_a += n as u64;
                     }
                     Err(e) if is_benign_error(&e.to_string()) => {
-                        // B closed, continue draining A
+                        // B closed with benign error, drain A
                         let _ = a.shutdown().await;
                         loop {
-                            match a_read.await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
-                                    a_to_b += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
                             match a.read(&mut buf_a).await {
                                 Ok(0) => break,
                                 Ok(n) => {
