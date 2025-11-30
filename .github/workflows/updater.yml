@@ -1,20 +1,11 @@
 name: Dependency Updater
 
-# Updates both Cargo.toml and Cargo.lock to latest stable versions
-# Creates PR with all changes for review
+# Updates dependencies to latest stable versions
+# Ensures version consistency between Cargo.toml and Cargo.lock
+# Auto-rollback on failure
 
 on:
   workflow_dispatch:
-    inputs:
-      update_mode:
-        description: 'Update mode'
-        required: true
-        default: 'stable'
-        type: choice
-        options:
-          - stable      # Update to latest stable versions in both files
-          - lockfile    # Only regenerate Cargo.lock
-          - patch       # Only patch version updates
 
 jobs:
   update-dependencies:
@@ -33,7 +24,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       
-      - name: Install cargo-edit for version updates
+      - name: Install cargo-edit
         run: cargo install cargo-edit
       
       - name: Backup current files
@@ -42,103 +33,158 @@ jobs:
           cp Cargo.lock Cargo.lock.backup
           echo "✅ Backed up Cargo.toml and Cargo.lock"
       
-      - name: Update dependencies based on mode
+      - name: Read current versions from Cargo.toml
+        id: current_versions
         run: |
-          echo "📦 Update mode: ${{ inputs.update_mode }}"
+          echo "📖 Reading current versions from Cargo.toml..."
+          
+          # Extract versions from Cargo.toml
+          WASM_BINDGEN_OLD=$(grep '^wasm-bindgen = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          WORKER_OLD=$(grep '^worker = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          WASM_FUTURES_OLD=$(grep '^wasm-bindgen-futures = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          
+          echo "wasm_bindgen_old=$WASM_BINDGEN_OLD" >> $GITHUB_OUTPUT
+          echo "worker_old=$WORKER_OLD" >> $GITHUB_OUTPUT
+          echo "wasm_futures_old=$WASM_FUTURES_OLD" >> $GITHUB_OUTPUT
+          
+          echo "Current versions in Cargo.toml:"
+          echo "  - wasm-bindgen: $WASM_BINDGEN_OLD"
+          echo "  - worker: $WORKER_OLD"
+          echo "  - wasm-bindgen-futures: $WASM_FUTURES_OLD"
+      
+      - name: Update to latest stable versions
+        id: update
+        run: |
+          echo "🔄 Updating to latest stable versions..."
           echo "================================"
           
-          case "${{ inputs.update_mode }}" in
-            stable)
-              echo "🔄 Updating to latest stable versions..."
-              # Update major dependencies to latest stable
-              cargo upgrade --incompatible worker wasm-bindgen wasm-bindgen-futures
-              # Update all other dependencies
-              cargo update
-              ;;
-            lockfile)
-              echo "🔒 Regenerating Cargo.lock only..."
-              rm -f Cargo.lock
-              cargo generate-lockfile
-              cargo update
-              ;;
-            patch)
-              echo "🩹 Patch updates only..."
-              cargo update
-              ;;
-          esac
+          # Update critical dependencies to latest stable in Cargo.toml
+          echo "📦 Updating wasm-bindgen..."
+          cargo upgrade --incompatible wasm-bindgen
           
-          echo "✅ Dependencies updated"
+          echo "📦 Updating wasm-bindgen-futures..."
+          cargo upgrade --incompatible wasm-bindgen-futures
+          
+          echo "📦 Updating worker..."
+          cargo upgrade --incompatible worker
+          
+          echo "📦 Updating all other dependencies..."
+          cargo upgrade
+          
+          echo "✅ Cargo.toml updated to latest stable versions"
+          
+          # Regenerate Cargo.lock to match Cargo.toml
+          echo ""
+          echo "🔄 Regenerating Cargo.lock..."
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          cargo update
+          
+          echo "✅ Cargo.lock regenerated with matching versions"
       
-      - name: Extract version changes
-        id: versions
+      - name: Extract new versions
+        id: new_versions
         run: |
-          echo "📊 Detecting version changes..."
+          echo "📊 Reading new versions..."
           
-          # Get wasm-bindgen versions
-          OLD_WASM_TOML=$(grep '^wasm-bindgen = ' Cargo.toml.backup | grep -oP '"\K[^"]+' || echo "N/A")
-          NEW_WASM_TOML=$(grep '^wasm-bindgen = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
-          OLD_WASM_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock.backup | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
-          NEW_WASM_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          # Read from Cargo.toml (source of truth)
+          WASM_BINDGEN_NEW=$(grep '^wasm-bindgen = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          WORKER_NEW=$(grep '^worker = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          WASM_FUTURES_NEW=$(grep '^wasm-bindgen-futures = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
           
-          # Get worker versions
-          OLD_WORKER_TOML=$(grep '^worker = ' Cargo.toml.backup | grep -oP '"\K[^"]+' || echo "N/A")
-          NEW_WORKER_TOML=$(grep '^worker = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
-          OLD_WORKER_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock.backup | grep -A 3 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
-          NEW_WORKER_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          # Verify Cargo.lock matches
+          WASM_BINDGEN_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          WORKER_LOCK=$(grep -A 3 '\[\[package\]\]' Cargo.lock | grep -A 3 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
           
-          # Get wasm-bindgen-futures versions
-          OLD_WASM_FUTURES=$(grep '^wasm-bindgen-futures = ' Cargo.toml.backup | grep -oP '"\K[^"]+' || echo "N/A")
-          NEW_WASM_FUTURES=$(grep '^wasm-bindgen-futures = ' Cargo.toml | grep -oP '"\K[^"]+' || echo "N/A")
+          echo "wasm_bindgen_new=$WASM_BINDGEN_NEW" >> $GITHUB_OUTPUT
+          echo "worker_new=$WORKER_NEW" >> $GITHUB_OUTPUT
+          echo "wasm_futures_new=$WASM_FUTURES_NEW" >> $GITHUB_OUTPUT
+          echo "wasm_bindgen_lock=$WASM_BINDGEN_LOCK" >> $GITHUB_OUTPUT
+          echo "worker_lock=$WORKER_LOCK" >> $GITHUB_OUTPUT
           
-          echo "wasm_bindgen_toml_old=$OLD_WASM_TOML" >> $GITHUB_OUTPUT
-          echo "wasm_bindgen_toml_new=$NEW_WASM_TOML" >> $GITHUB_OUTPUT
-          echo "wasm_bindgen_lock_old=$OLD_WASM_LOCK" >> $GITHUB_OUTPUT
-          echo "wasm_bindgen_lock_new=$NEW_WASM_LOCK" >> $GITHUB_OUTPUT
+          echo "New versions:"
+          echo "  Cargo.toml:"
+          echo "    - wasm-bindgen: $WASM_BINDGEN_NEW"
+          echo "    - worker: $WORKER_NEW"
+          echo "    - wasm-bindgen-futures: $WASM_FUTURES_NEW"
+          echo ""
+          echo "  Cargo.lock (verification):"
+          echo "    - wasm-bindgen: $WASM_BINDGEN_LOCK"
+          echo "    - worker: $WORKER_LOCK"
           
-          echo "worker_toml_old=$OLD_WORKER_TOML" >> $GITHUB_OUTPUT
-          echo "worker_toml_new=$NEW_WORKER_TOML" >> $GITHUB_OUTPUT
-          echo "worker_lock_old=$OLD_WORKER_LOCK" >> $GITHUB_OUTPUT
-          echo "worker_lock_new=$NEW_WORKER_LOCK" >> $GITHUB_OUTPUT
+          # Verify versions match
+          if [ "$WASM_BINDGEN_NEW" != "$WASM_BINDGEN_LOCK" ]; then
+            echo "⚠️  WARNING: wasm-bindgen version mismatch!"
+            echo "  Cargo.toml: $WASM_BINDGEN_NEW"
+            echo "  Cargo.lock: $WASM_BINDGEN_LOCK"
+            exit 1
+          fi
           
-          echo "wasm_futures_old=$OLD_WASM_FUTURES" >> $GITHUB_OUTPUT
-          echo "wasm_futures_new=$NEW_WASM_FUTURES" >> $GITHUB_OUTPUT
+          if [ "$WORKER_NEW" != "$WORKER_LOCK" ]; then
+            echo "⚠️  WARNING: worker version mismatch!"
+            echo "  Cargo.toml: $WORKER_NEW"
+            echo "  Cargo.lock: $WORKER_LOCK"
+            exit 1
+          fi
           
-          # Display summary
-          echo "### Version Changes:"
-          echo "wasm-bindgen (Cargo.toml): $OLD_WASM_TOML → $NEW_WASM_TOML"
-          echo "wasm-bindgen (Cargo.lock): $OLD_WASM_LOCK → $NEW_WASM_LOCK"
-          echo "worker (Cargo.toml): $OLD_WORKER_TOML → $NEW_WORKER_TOML"
-          echo "worker (Cargo.lock): $OLD_WORKER_LOCK → $NEW_WORKER_LOCK"
-          echo "wasm-bindgen-futures: $OLD_WASM_FUTURES → $NEW_WASM_FUTURES"
+          echo "✅ Version verification passed - Cargo.toml and Cargo.lock are in sync"
       
       - name: Test build compatibility
+        id: build_test
         run: |
           echo "🔨 Testing build with updated dependencies..."
           cargo check --target wasm32-unknown-unknown --release
           echo "✅ Build check passed - all dependencies compatible"
       
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Update or build failed - Rolling back..."
+          
+          # Restore backups
+          if [ -f Cargo.toml.backup ]; then
+            cp Cargo.toml.backup Cargo.toml
+            echo "✅ Restored Cargo.toml from backup"
+          fi
+          
+          if [ -f Cargo.lock.backup ]; then
+            cp Cargo.lock.backup Cargo.lock
+            echo "✅ Restored Cargo.lock from backup"
+          fi
+          
+          # Commit rollback
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if ! git diff --quiet; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore: rollback failed dependency update"
+            git push origin beta
+            echo "✅ Rollback committed and pushed to beta branch"
+          else
+            echo "ℹ️  No changes to rollback"
+          fi
+          
+          echo "## ❌ Dependency Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The dependency update process failed and has been automatically rolled back." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Actions Taken" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Restored Cargo.toml from backup" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Restored Cargo.lock from backup" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Changes reverted in beta branch" >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+      
       - name: Check for changes
         id: changes
         run: |
-          TOML_CHANGED=false
-          LOCK_CHANGED=false
-          
-          if ! git diff --exit-code Cargo.toml; then
-            TOML_CHANGED=true
-            echo "📝 Cargo.toml has changes"
-          fi
-          
-          if ! git diff --exit-code Cargo.lock; then
-            LOCK_CHANGED=true
-            echo "🔒 Cargo.lock has changes"
-          fi
-          
-          if [ "$TOML_CHANGED" = true ] || [ "$LOCK_CHANGED" = true ]; then
+          if ! git diff --exit-code Cargo.toml Cargo.lock; then
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "✅ Dependencies updated successfully"
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No changes needed - dependencies already up-to-date"
+            echo "ℹ️  No changes needed - dependencies already at latest stable"
           fi
       
       - name: Create Pull Request
@@ -149,38 +195,42 @@ jobs:
           commit-message: "chore: update dependencies to latest stable versions"
           title: "⬆️ Update: Latest stable dependencies [beta]"
           body: |
-            ## ⬆️ Dependency Updates
+            ## ⬆️ Dependency Updates - Latest Stable
             
             **Target Branch:** `beta`  
-            **Update Mode:** `${{ inputs.update_mode }}`
+            **Update Strategy:** Stable releases only
             
             ### Version Changes
             
-            #### Cargo.toml
-            - **wasm-bindgen**: `${{ steps.versions.outputs.wasm_bindgen_toml_old }}` → `${{ steps.versions.outputs.wasm_bindgen_toml_new }}`
-            - **worker**: `${{ steps.versions.outputs.worker_toml_old }}` → `${{ steps.versions.outputs.worker_toml_new }}`
-            - **wasm-bindgen-futures**: `${{ steps.versions.outputs.wasm_futures_old }}` → `${{ steps.versions.outputs.wasm_futures_new }}`
+            | Package | Old Version | New Version |
+            |---------|-------------|-------------|
+            | **wasm-bindgen** | `${{ steps.current_versions.outputs.wasm_bindgen_old }}` | `${{ steps.new_versions.outputs.wasm_bindgen_new }}` |
+            | **worker** | `${{ steps.current_versions.outputs.worker_old }}` | `${{ steps.new_versions.outputs.worker_new }}` |
+            | **wasm-bindgen-futures** | `${{ steps.current_versions.outputs.wasm_futures_old }}` | `${{ steps.new_versions.outputs.wasm_futures_new }}` |
             
-            #### Cargo.lock
-            - **wasm-bindgen**: `${{ steps.versions.outputs.wasm_bindgen_lock_old }}` → `${{ steps.versions.outputs.wasm_bindgen_lock_new }}`
-            - **worker**: `${{ steps.versions.outputs.worker_lock_old }}` → `${{ steps.versions.outputs.worker_lock_new }}`
+            ### Verification Status
+            - ✅ Cargo.toml updated to latest stable versions
+            - ✅ Cargo.lock regenerated with matching versions
+            - ✅ Version consistency verified (Cargo.toml ↔ Cargo.lock)
+            - ✅ Build check passed for wasm32-unknown-unknown target
+            - ✅ All dependencies compatible
             
-            ### Verification
-            - ✅ Both Cargo.toml and Cargo.lock updated
-            - ✅ Build check passed for wasm32-unknown-unknown
-            - ✅ All dependencies using latest stable versions
-            - ✅ Version compatibility verified
+            ### Version Matching
+            ```
+            Cargo.toml → Cargo.lock
+            wasm-bindgen: ${{ steps.new_versions.outputs.wasm_bindgen_new }} → ${{ steps.new_versions.outputs.wasm_bindgen_lock }}
+            worker: ${{ steps.new_versions.outputs.worker_new }} → ${{ steps.new_versions.outputs.worker_lock }}
+            ```
             
-            ### Build Tool Compatibility
-            This update ensures:
-            - Latest `wasm-bindgen-cli` matches `wasm-bindgen` version
-            - Latest `worker-build` matches `worker` version
-            - All sub-dependencies are compatible
+            ### Deployment Compatibility
+            - Latest `wasm-bindgen-cli` will match `wasm-bindgen` version
+            - Latest `worker-build` will match `worker` version
+            - All sub-dependencies resolved to stable versions
             
             ### Next Steps
-            1. Review the Cargo.toml and Cargo.lock changes
-            2. Merge to apply latest stable versions
-            3. Deployment workflow will auto-detect and use correct tool versions
+            1. Review the version changes
+            2. Merge to apply latest stable dependencies
+            3. Deployment workflow will auto-detect correct tool versions
             
             ---
             *Auto-generated by updater.yml workflow*  
@@ -195,21 +245,31 @@ jobs:
         run: |
           echo "## ✅ Dependencies Successfully Updated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Changes" >> $GITHUB_STEP_SUMMARY
-          echo "- **Mode:** ${{ inputs.update_mode }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Files:** Cargo.toml + Cargo.lock" >> $GITHUB_STEP_SUMMARY
+          echo "### Update Strategy" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode:** Latest stable versions only" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:** Cargo.toml (updated first)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Generated:** Cargo.lock (regenerated to match)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Key Versions" >> $GITHUB_STEP_SUMMARY
-          echo "- wasm-bindgen: ${{ steps.versions.outputs.wasm_bindgen_toml_new }}" >> $GITHUB_STEP_SUMMARY
-          echo "- worker: ${{ steps.versions.outputs.worker_toml_new }}" >> $GITHUB_STEP_SUMMARY
-          echo "- wasm-bindgen-futures: ${{ steps.versions.outputs.wasm_futures_new }}" >> $GITHUB_STEP_SUMMARY
+          echo "### New Versions" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Version |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| wasm-bindgen | ${{ steps.new_versions.outputs.wasm_bindgen_new }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| worker | ${{ steps.new_versions.outputs.worker_new }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| wasm-bindgen-futures | ${{ steps.new_versions.outputs.wasm_futures_new }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Pull request created" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Build compatibility verified" >> $GITHUB_STEP_SUMMARY
+          echo "### Verification" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Version matching verified" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Build compatibility confirmed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Pull request created" >> $GITHUB_STEP_SUMMARY
       
       - name: No Changes Summary
         if: steps.changes.outputs.changed == 'false'
         run: |
           echo "## ℹ️  Dependencies Already Up-to-Date" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "No updates needed - all dependencies are already at latest stable versions." >> $GITHUB_STEP_SUMMARY
+          echo "All dependencies are already at latest stable versions." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current Versions" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen: ${{ steps.current_versions.outputs.wasm_bindgen_old }}" >> $GITHUB_STEP_SUMMARY
+          echo "- worker: ${{ steps.current_versions.outputs.worker_old }}" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen-futures: ${{ steps.current_versions.outputs.wasm_futures_old }}" >> $GITHUB_STEP_SUMMARY
