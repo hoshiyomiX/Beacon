@@ -51,8 +51,6 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    use futures_util::future::FutureExt;
-
     let mut a_to_b: u64 = 0;
     let mut b_to_a: u64 = 0;
     let mut buf_a = vec![0u8; 8192];
