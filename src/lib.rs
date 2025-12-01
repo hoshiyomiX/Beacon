@@ -6,6 +6,8 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+use serde_json::json;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
@@ -44,6 +46,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
 
     let config = Config { 
         uuid, 
+        host: host.clone(), 
         proxy_addr: host, 
         proxy_port: 443, 
         main_page_url, 

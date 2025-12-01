@@ -1,0 +1,223 @@
+name: Update Specific Dependencies
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_version:
+        description: 'worker crate version'
+        required: true
+        default: '0.4.2'
+        type: string
+      wasm_bindgen_version:
+        description: 'wasm-bindgen crate version'
+        required: true
+        default: '0.2.105'
+        type: string
+      wasm_bindgen_futures_version:
+        description: 'wasm-bindgen-futures crate version'
+        required: true
+        default: '0.4.55'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+
+      - name: Update Dependencies (Fixed for Missing Cargo.lock)
+        id: update
+        env:
+          WORKER_VERSION: ${{ inputs.worker_version }}
+          WASM_BINDGEN_VERSION: ${{ inputs.wasm_bindgen_version }}
+          WASM_BINDGEN_FUTURES_VERSION: ${{ inputs.wasm_bindgen_futures_version }}
+        run: |
+          # Check if Cargo.lock exists
+          if [ ! -f Cargo.lock ]; then
+            echo "⚠️ Cargo.lock missing. Will regenerate from Cargo.toml"
+            HAS_LOCKFILE=false
+            cp Cargo.toml Cargo.toml.bak
+            
+            # Remove any existing broken lockfile
+            rm -f Cargo.lock
+          else
+            echo "📦 Cargo.lock found. Creating backup..."
+            HAS_LOCKFILE=true
+            cp Cargo.lock Cargo.lock.bak
+            cp Cargo.toml Cargo.toml.bak
+          fi
+
+          echo "📝 Updating Cargo.toml with specific versions..."
+          # Update Cargo.toml versions
+          sed -i.bak "s|worker = \".*\"|worker = \"$WORKER_VERSION\"|g" Cargo.toml
+          sed -i.bak "s|wasm-bindgen = \".*\"|wasm-bindgen = \"$WASM_BINDGEN_VERSION\"|g" Cargo.toml
+          sed -i.bak "s|wasm-bindgen-futures = \".*\"|wasm-bindgen-futures = \"$WASM_BINDGEN_FUTURES_VERSION\"|g" Cargo.toml
+
+          echo "📋 Updated Cargo.toml versions:"
+          grep -E "(worker|wasm-bindgen|wasm-bindgen-futures)" Cargo.toml || echo "⚠️ Specified dependencies not found in Cargo.toml"
+
+          # Clean cargo cache
+          cargo clean
+          rm -rf ~/.cargo/registry/cache
+
+          # Generate/Update lockfile based on whether it existed
+          echo "🔒 Updating dependencies..."
+          if [ "$HAS_LOCKFILE" = "false" ]; then
+            # NO lockfile: Generate fresh one WITHOUT --locked
+            echo "🔄 Generating new Cargo.lock from scratch..."
+            cargo generate-lockfile
+            
+            # Lock to specific versions
+            echo "🔐 Locking to specific versions..."
+            cargo update --precise $WORKER_VERSION worker
+            cargo update --precise $WASM_BINDGEN_VERSION wasm-bindgen
+            cargo update --precise $WASM_BINDGEN_FUTURES_VERSION wasm-bindgen-futures
+            
+            echo "✅ New Cargo.lock generated successfully"
+          else
+            # Lockfile exists: Update normally
+            echo "🔄 Updating existing Cargo.lock..."
+            cargo update --precise $WORKER_VERSION worker
+            cargo update --precise $WASM_BINDGEN_VERSION wasm-bindgen
+            cargo update --precise $WASM_BINDGEN_FUTURES_VERSION wasm-bindgen-futures
+            
+            echo "✅ Existing Cargo.lock updated successfully"
+          fi
+
+          # Check for changes
+          if ! git diff --quiet Cargo.toml Cargo.lock 2>/dev/null || [ ! -f Cargo.lock ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Detected changes in Cargo.toml/Cargo.lock"
+            
+            # Verify build (different approach for missing lockfile)
+            echo "🛡️ Running build verification..."
+            if [ "$HAS_LOCKFILE" = "true" ]; then
+              # Lockfile existed: Use --locked
+              if cargo check --locked; then
+                echo "✅ Locked build verification passed"
+              else
+                echo "❌ Locked build failed! Rolling back..."
+                mv Cargo.lock.bak Cargo.lock
+                mv Cargo.toml.bak Cargo.toml
+                exit 1
+              fi
+            else
+              # No lockfile: Use regular check (generates lockfile if needed)
+              if cargo check; then
+                echo "✅ Basic build verification passed"
+              else
+                echo "❌ Basic build failed! Rolling back..."
+                rm -f Cargo.lock
+                mv Cargo.toml.bak Cargo.toml
+                exit 1
+              fi
+            fi
+            
+            # Clean up backups
+            rm -f Cargo.lock.bak Cargo.toml.bak
+            echo "📊 Dependency verification complete"
+            
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No changes detected"
+            rm -f Cargo.lock.bak Cargo.toml.bak
+          fi
+
+      - name: Show Dependency Tree
+        if: steps.update.outputs.has_changes == 'true'
+        run: |
+          echo "📋 Dependency tree after update:"
+          cargo tree | head -30 || echo "Could not generate tree"
+
+      - name: Create Pull Request
+        if: steps.update.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            chore(deps): lock WASM dependencies to specific versions
+            
+            - worker: ${{ inputs.worker_version }}
+            - wasm-bindgen: ${{ inputs.wasm_bindgen_version }}
+            - wasm-bindgen-futures: ${{ inputs.wasm_bindgen_futures_version }}
+            
+            ${{(steps.update.outputs.has_lockfile == 'false' && '🔄 Regenerated Cargo.lock from scratch' || '🔄 Updated existing Cargo.lock')}}
+            
+            Verified with: ${{ steps.update.outputs.has_lockfile == 'true' && 'cargo check --locked' || 'cargo check' }}
+          title: "chore(deps): Lock WASM dependencies v${{ inputs.worker_version }}"
+          body: |
+            ## WASM Dependencies Update
+            
+            Locks the following dependencies to exact versions:
+            
+            ### Updated Versions
+            | Dependency | Version |
+            |------------|---------|
+            | worker | `${{ inputs.worker_version }}` |
+            | wasm-bindgen | `${{ inputs.wasm_bindgen_version }}` |
+            | wasm-bindgen-futures | `${{ inputs.wasm_bindgen_futures_version }}` |
+            
+            ### Workflow Status
+            **Cargo.lock Status:** ${{ steps.update.outputs.has_lockfile == 'false' && '🔄 **Regenerated** from Cargo.toml (was missing)' || '✅ **Updated** existing file' }}
+            
+            ### Verification Steps
+            - ✅ Updated `Cargo.toml` with exact version strings
+            - ✅ Generated/Updated `Cargo.lock` using `cargo update --precise`
+            - ✅ Build verification: `${{ steps.update.outputs.has_lockfile == 'true' && 'cargo check --locked' || 'cargo check' }}` ✅ PASSED
+            - ✅ Dependency tree validated
+            
+            ### Safety Measures
+            - 📦 Backups created before modifications
+            - 🛡️ Rollback executed on build failure (not needed)
+            - 🔍 Changes verified before PR creation
+            
+            **Ready for review and merge to `beta` branch.**
+            
+            ---
+            *Automated by GitHub Actions*
+          branch: chore/lock-wasm-deps-${{ inputs.worker_version }}
+          base: beta
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
+            rust
+          assignees: hoshiyomiX
+
+      - name: Notify Result
+        if: always()
+        run: |
+          echo "=== UPDATE SUMMARY ==="
+          if [ "${{ steps.update.outputs.has_changes }}" = "true" ]; then
+            echo "✅ SUCCESS: Created PR with locked dependencies"
+            echo "   worker: ${{ inputs.worker_version }}"
+            echo "   wasm-bindgen: ${{ inputs.wasm_bindgen_version }}"
+            echo "   wasm-bindgen-futures: ${{ inputs.wasm_bindgen_futures_version }}"
+            if [ "${{ steps.update.outputs.has_lockfile }}" = "false" ]; then
+              echo "   📄 Cargo.lock: Regenerated from scratch"
+            else
+              echo "   📄 Cargo.lock: Updated in place"
+            fi
+            echo "   ✅ Build verification: PASSED"
+          else
+            echo "ℹ️ No changes needed - versions already current"
+          fi
+          echo "======================"

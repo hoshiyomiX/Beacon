@@ -1,0 +1,182 @@
+name: Regenerate Cargo.lock
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_cache:
+        description: 'Clean cargo cache before regenerating'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: false
+
+      - name: Clean cargo cache (optional)
+        if: ${{ inputs.clean_cache }}
+        run: |
+          echo "🧹 Cleaning cargo cache..."
+          cargo clean
+          rm -rf ~/.cargo/registry/cache
+          rm -rf ~/.cargo/registry/index
+          echo "✅ Cache cleaned"
+
+      - name: Check initial state
+        id: check_initial
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "had_lockfile=true" >> $GITHUB_OUTPUT
+            echo "📦 Cargo.lock exists - will regenerate"
+          else
+            echo "had_lockfile=false" >> $GITHUB_OUTPUT
+            echo "⚠️  Cargo.lock missing - will create new one"
+          fi
+
+      - name: Backup and remove existing Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            echo "📦 Backing up existing Cargo.lock..."
+            cp Cargo.lock Cargo.lock.backup
+            rm Cargo.lock
+            echo "✅ Existing Cargo.lock removed"
+          else
+            echo "ℹ️  No Cargo.lock found (already deleted)"
+          fi
+
+      - name: Regenerate Cargo.lock
+        id: regenerate
+        run: |
+          echo "🔄 Generating new Cargo.lock from Cargo.toml..."
+          
+          # Generate fresh lockfile
+          if cargo generate-lockfile; then
+            echo "✅ Cargo.lock generated successfully"
+            echo "lockfile_generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to generate Cargo.lock"
+            
+            # Restore backup if exists
+            if [ -f Cargo.lock.backup ]; then
+              echo "⚠️  Restoring backup..."
+              mv Cargo.lock.backup Cargo.lock
+            fi
+            exit 1
+          fi
+
+      - name: Verify build with new lockfile
+        id: verify
+        run: |
+          echo "🛡️  Verifying build with new Cargo.lock..."
+          
+          if cargo check; then
+            echo "✅ Build verification passed"
+            echo "build_verified=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Build verification failed"
+            
+            # Restore backup if exists
+            if [ -f Cargo.lock.backup ]; then
+              echo "⚠️  Restoring backup..."
+              mv Cargo.lock.backup Cargo.lock
+            else
+              rm -f Cargo.lock
+            fi
+            exit 1
+          fi
+
+      - name: Show dependency summary
+        if: steps.regenerate.outputs.lockfile_generated == 'true'
+        run: |
+          echo "📋 Top-level dependencies:"
+          cargo tree --depth 1
+          echo ""
+          echo "📊 Cargo.lock stats:"
+          if [ -f Cargo.lock ]; then
+            echo "   Total packages: $(grep -c "^name = " Cargo.lock || echo 0)"
+            echo "   File size: $(du -h Cargo.lock | cut -f1)"
+          fi
+
+      - name: Clean up backup
+        if: always()
+        run: |
+          if [ -f Cargo.lock.backup ]; then
+            rm Cargo.lock.backup
+            echo "🧹 Backup cleaned up"
+          fi
+
+      - name: Commit and push regenerated Cargo.lock
+        if: steps.verify.outputs.build_verified == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Add Cargo.lock (whether new or modified)
+          if [ -f Cargo.lock ]; then
+            git add Cargo.lock
+            
+            # Check if there are actual changes to commit
+            if git diff --cached --quiet; then
+              echo "ℹ️  No changes to commit - Cargo.lock is identical"
+            else
+              if [ "${{ steps.check_initial.outputs.had_lockfile }}" = "false" ]; then
+                COMMIT_MSG="chore: Add missing Cargo.lock
+
+Generated fresh Cargo.lock from Cargo.toml
+Build verification: ✅ PASSED
+Cache cleaned: ${{ inputs.clean_cache }}"
+              else
+                COMMIT_MSG="chore: Regenerate Cargo.lock
+
+Generated fresh Cargo.lock from Cargo.toml
+Build verification: ✅ PASSED
+Cache cleaned: ${{ inputs.clean_cache }}"
+              fi
+              
+              git commit -m "$COMMIT_MSG"
+              git push origin beta
+              echo "✅ Cargo.lock committed and pushed to beta branch"
+            fi
+          else
+            echo "❌ Cargo.lock file not found after generation!"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== REGENERATION SUMMARY ==="
+          if [ "${{ steps.verify.outputs.build_verified }}" = "true" ]; then
+            echo "✅ SUCCESS: Cargo.lock regenerated and verified"
+            if [ "${{ steps.check_initial.outputs.had_lockfile }}" = "false" ]; then
+              echo "   🆕 Created new Cargo.lock (was missing)"
+            else
+              echo "   🔄 Regenerated existing Cargo.lock"
+            fi
+            echo "   📄 New lockfile created from Cargo.toml"
+            echo "   ✅ Build verification: PASSED"
+            echo "   🔀 Committed directly to beta branch"
+          else
+            echo "❌ FAILED: Could not regenerate Cargo.lock"
+            echo "   Check the logs above for details"
+          fi
+          echo "============================"

@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust with caching
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -69,6 +69,7 @@ jobs:
               echo "rust_changed=false" >> $GITHUB_OUTPUT
             fi
           fi
+          echo "✅ wasm-bindgen: $(wasm-bindgen --version)"
 
       # Cache the built worker artifact with improved key
       - name: Cache built worker
@@ -89,7 +90,18 @@ jobs:
           worker-build --release
         env:
           CARGO_INCREMENTAL: 1
-          CARGO_TERM_COLOR: always
+
+      - name: Run wasm-bindgen
+        run: |
+          echo "=== Running wasm-bindgen ==="
+          mkdir -p build/worker
+          wasm-bindgen --target bundler --out-dir ./build/worker ./target/wasm32-unknown-unknown/release/beacon.wasm
+          
+          # Create shim.mjs to export the worker
+          cat > build/worker/shim.mjs << 'EOF'
+          import * as beacon from './beacon.js';
+          export default beacon;
+          EOF
 
       # Deploy with optimized settings
       - name: Deploy to Cloudflare Workers
