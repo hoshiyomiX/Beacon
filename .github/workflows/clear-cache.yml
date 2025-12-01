@@ -1,0 +1,58 @@
+name: Clear Cache for Specific Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch name to clear cache for'
+        required: true
+        default: 'test'
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  clear-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clear caches for specified branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = '${{ inputs.branch }}';
+            console.log(`Clearing caches for branch: ${branch}`);
+            
+            try {
+              // Get all caches for the specified branch
+              const caches = await github.rest.actions.getActionsCacheList({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/heads/${branch}`,
+                per_page: 100
+              });
+              
+              console.log(`Found ${caches.data.actions_caches.length} cache(s) for branch ${branch}`);
+              
+              if (caches.data.actions_caches.length === 0) {
+                console.log('No caches found to delete');
+                return;
+              }
+              
+              // Delete each cache
+              for (const cache of caches.data.actions_caches) {
+                console.log(`Deleting cache: ${cache.key} (ID: ${cache.id})`);
+                await github.rest.actions.deleteActionsCacheById({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  cache_id: cache.id,
+                });
+                console.log(`Successfully deleted cache: ${cache.key}`);
+              }
+              
+              console.log(`Successfully cleared all caches for branch: ${branch}`);
+            } catch (error) {
+              console.error(`Error clearing caches: ${error.message}`);
+              throw error;
+            }
