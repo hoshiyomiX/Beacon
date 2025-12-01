@@ -104,14 +104,6 @@ jobs:
             fi
           done
 
-      # Remove build command to use pre-built artifacts
-      - name: Prepare wrangler config
-        run: |
-          # Remove [build] section from wrangler.toml
-          sed -i '/^\[build\]$/,/^command/d' wrangler.toml
-          # Also remove [env.dev.build] section
-          sed -i '/^\[env\.dev\]$/,/^build.*command/d' wrangler.toml
-
       # Deploy with optimized settings
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
