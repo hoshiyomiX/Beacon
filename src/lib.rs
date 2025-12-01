@@ -138,7 +138,8 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         server.accept()?;
 
-        // FIXED: Graceful error handling at spawn boundary to prevent CF error logging
+        // WASM-compatible spawn: Use spawn_local instead of tokio::spawn
+        // tokio::spawn requires multi-threaded runtime not available in Cloudflare Workers
         wasm_bindgen_futures::spawn_local(async move {
             // Get events with benign error handling
             let events = match server.events() {
