@@ -93,11 +93,11 @@ jobs:
           echo "Running wasm-opt for additional size optimization..."
           for wasm_file in build/**/*.wasm; do
             if [ -f "$wasm_file" ]; then
-              original_size=$(stat -f%z "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
+              original_size=$(stat --format=%s "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
               echo "Optimizing: $wasm_file (size: $original_size bytes)"
               wasm-opt -Oz "$wasm_file" -o "${wasm_file}.opt"
               mv "${wasm_file}.opt" "$wasm_file"
-              optimized_size=$(stat -f%z "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
+              optimized_size=$(stat --format=%s "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
               reduction=$((original_size - optimized_size))
               percent=$((reduction * 100 / original_size))
               echo "✓ Optimized to $optimized_size bytes (saved $reduction bytes, $percent% reduction)"
