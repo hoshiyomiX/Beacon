@@ -55,21 +55,29 @@ jobs:
       - name: Check for code changes
         id: changes
         run: |
-          git fetch origin ${{ github.event.before }} --depth=1 2>/dev/null || true
-          if git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null | grep -qE '\.(rs|toml)$'; then
+          # Handle first push, force-push, or null commits
+          if [ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ] || [ -z "${{ github.event.before }}" ]; then
+            echo "First push or force-push detected, building from scratch"
             echo "rust_changed=true" >> $GITHUB_OUTPUT
           else
-            echo "rust_changed=false" >> $GITHUB_OUTPUT
+            git fetch origin ${{ github.event.before }} --depth=1 2>/dev/null || true
+            if git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null | grep -qE '\.(rs|toml)$'; then
+              echo "Rust code changes detected"
+              echo "rust_changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "No Rust code changes detected"
+              echo "rust_changed=false" >> $GITHUB_OUTPUT
+            fi
           fi
 
-      # Cache the built worker artifact
+      # Cache the built worker artifact with improved key
       - name: Cache built worker
         if: steps.changes.outputs.rust_changed == 'false'
         uses: actions/cache@v4
         id: worker-cache
         with:
           path: build/
-          key: ${{ runner.os }}-worker-${{ hashFiles('Cargo.lock', 'src/**/*.rs') }}
+          key: ${{ runner.os }}-worker-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'src/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-worker-
 
@@ -77,18 +85,29 @@ jobs:
       - name: Build worker
         if: steps.changes.outputs.rust_changed == 'true' || steps.worker-cache.outputs.cache-hit != 'true'
         run: |
+          echo "Building worker..."
           worker-build --release
         env:
           CARGO_INCREMENTAL: 1
           CARGO_TERM_COLOR: always
 
-      # Remove build command to use pre-built artifacts
+      # Prepare wrangler config with backup
       - name: Prepare wrangler config
         run: |
-          # Remove [build] section from wrangler.toml
-          sed -i '/^\[build\]$/,/^command/d' wrangler.toml
-          # Also remove [env.dev.build] section
-          sed -i '/^\[env\.dev\]$/,/^build.*command/d' wrangler.toml
+          # Create backup of original wrangler.toml
+          cp wrangler.toml wrangler.toml.backup
+          
+          # Remove [build] section from wrangler.toml more safely
+          if grep -q '^\[build\]$' wrangler.toml; then
+            sed -i '/^\[build\]$/,/^$/d' wrangler.toml
+            echo "Removed [build] section from wrangler.toml"
+          fi
+          
+          # Remove [env.dev.build] section if exists
+          if grep -q '^\[env\.dev\]$' wrangler.toml; then
+            sed -i '/^\[env\.dev\]$/,/^$/d' wrangler.toml
+            echo "Removed [env.dev] section from wrangler.toml"
+          fi
 
       # Deploy with optimized settings
       - name: Deploy to Cloudflare Workers
@@ -96,7 +115,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           wranglerVersion: '3.90.0'
-          # Pass secrets as environment variables if needed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
