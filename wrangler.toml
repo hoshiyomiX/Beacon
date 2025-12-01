@@ -21,12 +21,6 @@ routes = [
 binding = "library"
 id = "a9f61fcc3abf48af91a5924027ee1a1a"
 
-[build]
-command = "cargo install -q worker-build && worker-build --release"
-
-[env.dev]
-build = { command = "cargo install -q worker-build && worker-build --dev" }
-
 [vars]
 
 UUID = "38425afe-8466-4876-8223-f3d604ca3c18"

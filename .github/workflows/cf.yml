@@ -91,24 +91,6 @@ jobs:
           CARGO_INCREMENTAL: 1
           CARGO_TERM_COLOR: always
 
-      # Prepare wrangler config with backup
-      - name: Prepare wrangler config
-        run: |
-          # Create backup of original wrangler.toml
-          cp wrangler.toml wrangler.toml.backup
-          
-          # Remove [build] section from wrangler.toml more safely
-          if grep -q '^\[build\]$' wrangler.toml; then
-            sed -i '/^\[build\]$/,/^$/d' wrangler.toml
-            echo "Removed [build] section from wrangler.toml"
-          fi
-          
-          # Remove [env.dev.build] section if exists
-          if grep -q '^\[env\.dev\]$' wrangler.toml; then
-            sed -i '/^\[env\.dev\]$/,/^$/d' wrangler.toml
-            echo "Removed [env.dev] section from wrangler.toml"
-          fi
-
       # Deploy with optimized settings
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
