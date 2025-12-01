@@ -32,7 +32,7 @@ jobs:
         with:
           shared-key: "beacon-wasm"
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/test' }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/test' || github.ref == 'refs/heads/debug' || github.ref == 'refs/heads/alpha' || github.ref == 'refs/heads/beta' }}
 
       # Cache build tools separately (rarely change)
       - name: Cache build tools
@@ -43,7 +43,7 @@ jobs:
             ~/.cargo/bin/wasm-bindgen
             ~/.cargo/bin/worker-build
             /usr/local/bin/wasm-opt
-          key: ${{ runner.os }}-build-tools-v4-wasm-bindgen-0.2.105-worker-build-0.7.0-binaryen-latest
+          key: ${{ runner.os }}-build-tools-v4-wasm-bindgen-0.2.105-worker-build-0.7.0-binaryen-119
 
       # Install build tools only if not cached
       - name: Install build tools
@@ -51,9 +51,9 @@ jobs:
         run: |
           cargo install wasm-bindgen-cli --version 0.2.105 --locked
           cargo install worker-build --version 0.7.0 --locked
-          # Install binaryen (provides wasm-opt)
+          # Install specific binaryen version (provides wasm-opt)
           sudo apt-get update
-          sudo apt-get install -y binaryen
+          sudo apt-get install -y binaryen=119-1
 
       # Check if Rust code changed to skip unnecessary rebuilds
       - name: Check for code changes
