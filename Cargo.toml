@@ -30,9 +30,11 @@ wasm-bindgen = "=0.2.105"
 wasm-bindgen-futures = "=0.4.55"
 gloo-timers = { version = "0.3", features = ["futures"] }
 
+# Optimized release profile for Cloudflare Workers deployment
+# Prioritizes binary size and cold start performance
 [profile.release]
-opt-level = "z"
-lto = true
-strip = true
-codegen-units = 1
-panic = "abort"
+opt-level = "z"      # Optimize for size (critical for 1MB Workers limit)
+lto = true           # Link-time optimization for smaller, faster code
+strip = true         # Remove debug symbols (production-ready)
+codegen-units = 1    # Single codegen unit for maximum optimization
+panic = "abort"      # Abort on panic (smaller binary, appropriate for Workers)
