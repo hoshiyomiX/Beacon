@@ -81,8 +81,6 @@ jobs:
         env:
           CARGO_INCREMENTAL: 1
           CARGO_TERM_COLOR: always
-          # Use all available cores
-          CARGO_BUILD_JOBS: 0
 
       # Remove build command to use pre-built artifacts
       - name: Prepare wrangler config
