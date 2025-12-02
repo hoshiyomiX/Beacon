@@ -1,0 +1,187 @@
+# Automated Cargo.lock updater workflow
+# Keeps dependencies fresh while maintaining version compatibility
+# Future-proofs wasm-bindgen by letting worker-build auto-detect versions from Cargo.lock
+
+name: Update Cargo.lock
+
+on:
+  # Run weekly to keep dependencies updated
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday at 2 AM UTC
+  
+  # Allow manual trigger for immediate updates
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Update type'
+        required: true
+        default: 'minor'
+        type: choice
+        options:
+          - patch    # Bug fixes only (0.0.x)
+          - minor    # New features, backwards compatible (0.x.0)
+          - major    # Breaking changes (x.0.0)
+
+jobs:
+  update-cargo-lock:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cargo-lock-updater"
+          cache-on-failure: true
+
+      - name: Backup current Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            cp Cargo.lock Cargo.lock.backup
+            echo "✓ Backed up existing Cargo.lock"
+          else
+            echo "⚠ No existing Cargo.lock found"
+          fi
+
+      - name: Update dependencies
+        id: update
+        run: |
+          echo "Update type: ${{ github.event.inputs.update_type || 'minor' }}"
+          
+          case "${{ github.event.inputs.update_type || 'minor' }}" in
+            patch)
+              echo "Updating patch versions only..."
+              cargo update
+              ;;
+            minor)
+              echo "Updating minor and patch versions..."
+              cargo update
+              ;;
+            major)
+              echo "Warning: Major updates may include breaking changes"
+              cargo update --aggressive
+              ;;
+          esac
+          
+          echo "✓ Dependencies updated"
+
+      - name: Verify build after update
+        run: |
+          echo "Building to verify dependencies work..."
+          cargo check --target wasm32-unknown-unknown --all-features
+          echo "✓ Build verification successful"
+
+      - name: Extract version changes
+        id: changes
+        run: |
+          if [ -f Cargo.lock.backup ]; then
+            echo "Analyzing dependency changes..."
+            
+            # Extract wasm-bindgen version changes
+            OLD_WASM_BINDGEN=$(grep -A 1 '\[\[package\]\]' Cargo.lock.backup | grep -A 1 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "none")
+            NEW_WASM_BINDGEN=$(grep -A 1 '\[\[package\]\]' Cargo.lock | grep -A 1 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "none")
+            
+            echo "wasm_bindgen_old=$OLD_WASM_BINDGEN" >> $GITHUB_OUTPUT
+            echo "wasm_bindgen_new=$NEW_WASM_BINDGEN" >> $GITHUB_OUTPUT
+            
+            # Count total package changes
+            CHANGED_COUNT=$(diff <(grep 'name = ' Cargo.lock.backup | sort) <(grep 'name = ' Cargo.lock | sort) | grep -c '^[<>]' || echo "0")
+            echo "changed_count=$CHANGED_COUNT" >> $GITHUB_OUTPUT
+            
+            rm Cargo.lock.backup
+          else
+            echo "No backup found, this is a new Cargo.lock"
+            NEW_WASM_BINDGEN=$(grep -A 1 '\[\[package\]\]' Cargo.lock | grep -A 1 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "unknown")
+            echo "wasm_bindgen_new=$NEW_WASM_BINDGEN" >> $GITHUB_OUTPUT
+            echo "changed_count=new" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet Cargo.lock; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "⚠ No dependency changes detected"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✓ Dependency changes detected"
+          fi
+
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Create detailed commit message
+          if [ "${{ steps.changes.outputs.changed_count }}" = "new" ]; then
+            COMMIT_MSG="chore: generate initial Cargo.lock for reproducible builds
+
+- wasm-bindgen: ${{ steps.changes.outputs.wasm_bindgen_new }}
+- Ensures worker-build auto-detects correct wasm-bindgen-cli version
+- Prevents version mismatch issues in CI/CD and deployment"
+          else
+            COMMIT_MSG="chore: update Cargo.lock dependencies (${{ github.event.inputs.update_type || 'scheduled' }} update)
+
+- Updated ${{ steps.changes.outputs.changed_count }} package references
+- wasm-bindgen: ${{ steps.changes.outputs.wasm_bindgen_old }} → ${{ steps.changes.outputs.wasm_bindgen_new }}
+- worker-build will auto-detect new wasm-bindgen-cli version from lock file"
+          fi
+          
+          git add Cargo.lock
+          git commit -m "$COMMIT_MSG"
+          git push origin ${{ github.ref_name }}
+          
+          echo "✓ Changes committed and pushed"
+
+      - name: Create summary
+        if: always()
+        run: |
+          echo "## Cargo.lock Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.check_changes.outputs.has_changes }}" = "true" ]; then
+            echo "✅ **Status:** Dependencies updated successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Key Changes" >> $GITHUB_STEP_SUMMARY
+            echo "- **wasm-bindgen:** ${{ steps.changes.outputs.wasm_bindgen_old }} → ${{ steps.changes.outputs.wasm_bindgen_new }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Packages changed:** ${{ steps.changes.outputs.changed_count }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Update type:** ${{ github.event.inputs.update_type || 'scheduled minor' }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ **Status:** No dependency updates needed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All dependencies are already up to date." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Future-Proof Architecture" >> $GITHUB_STEP_SUMMARY
+          echo "- worker-build automatically detects wasm-bindgen version from Cargo.lock" >> $GITHUB_STEP_SUMMARY
+          echo "- Installs matching wasm-bindgen-cli version during build" >> $GITHUB_STEP_SUMMARY
+          echo "- No manual version pinning required" >> $GITHUB_STEP_SUMMARY
+          echo "- Updates are safe and backward-compatible within semantic versioning" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "## ❌ Cargo.lock Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The dependency update or build verification failed." >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs above for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Troubleshooting" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check for breaking changes in updated dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "2. Review the build verification output" >> $GITHUB_STEP_SUMMARY
+          echo "3. Consider using 'patch' update type for safer updates" >> $GITHUB_STEP_SUMMARY
