@@ -1,66 +1,51 @@
-name: Deploy to Cloudflare Workers
+name: cf workers
 
 on:
+  workflow_dispatch:
+
   push:
     branches:
-      - main
-      - testing
-  workflow_dispatch:
+      - master
+      - debug
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE.md'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    name: Deploy
+    environment: cf
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
         with:
-          targets: wasm32-unknown-unknown
+          toolchain: stable
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - name: Install wasm-bindgen-cli
+        run: cargo install -f wasm-bindgen-cli --version 0.2.100
 
       - name: Install worker-build
-        run: |
-          cargo install worker-build --locked
-          worker-build --version
+        run: cargo install -q worker-build
 
-      - name: Build WASM with detailed diagnostics
+      - name: Poison the cache
         run: |
-          echo "Starting worker-build..."
-          worker-build --release --verbose || {
-            echo "❌ worker-build failed with exit code $?"
-            echo "Checking for any build artifacts..."
-            find . -type f \( -name "*.wasm" -o -name "*.mjs" \) 2>/dev/null || echo "No artifacts found"
-            exit 1
-          }
-          
-          echo "✅ Build completed successfully"
-          echo "Searching for generated artifacts..."
-          find . -type f \( -name "*.wasm" -o -name "*.mjs" \)
-          
-          echo "\nBuild directory structure:"
-          ls -laR build/ 2>/dev/null || echo "No build/ directory found"
-          
-          echo "\nTarget directory structure:"
-          ls -la target/ 2>/dev/null || echo "No target/ directory found"
+          # Run a build that is expected to fail to populate the cache
+          worker-build --release || true
+          # Find the incorrect wasm-bindgen binary in the cache
+          WASM_BINDGEN_CACHE_PATH=$(find ~/.cache/worker-build -type f -name "wasm-bindgen")
+          echo "Found wasm-bindgen at: $WASM_BINDGEN_CACHE_PATH"
+          # Overwrite the incorrect cached binary with the correct one
+          cp "$(which wasm-bindgen)" "$WASM_BINDGEN_CACHE_PATH"
 
-      - name: Deploy to Cloudflare Workers
+      - name: Build
+        run: worker-build --release
+
+      - name: Remove build command from wrangler.toml
+        run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
+
+      - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
