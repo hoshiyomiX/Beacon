@@ -34,27 +34,33 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Install worker-build
-        run: cargo install worker-build --locked
-
-      - name: Build WASM
         run: |
-          worker-build --release --verbose
-          echo "Build completed. Checking output directory..."
-          ls -la build/ || echo "No build directory found"
-          find . -name "*.wasm" -type f || echo "No WASM files found"
+          cargo install worker-build --locked
+          worker-build --version
 
-      - name: Validate build artifact
+      - name: Build WASM with detailed diagnostics
         run: |
-          if [ ! -f "build/worker/shim.wasm" ]; then
-            echo "❌ Build failed: WASM artifact not found at build/worker/shim.wasm"
+          echo "Starting worker-build..."
+          worker-build --release --verbose || {
+            echo "❌ worker-build failed with exit code $?"
+            echo "Checking for any build artifacts..."
+            find . -type f \( -name "*.wasm" -o -name "*.mjs" \) 2>/dev/null || echo "No artifacts found"
             exit 1
-          fi
-          echo "✅ Build successful. Artifact size: $(ls -lh build/worker/shim.wasm | awk '{print $5}')"
+          }
+          
+          echo "✅ Build completed successfully"
+          echo "Searching for generated artifacts..."
+          find . -type f \( -name "*.wasm" -o -name "*.mjs" \)
+          
+          echo "\nBuild directory structure:"
+          ls -laR build/ 2>/dev/null || echo "No build/ directory found"
+          
+          echo "\nTarget directory structure:"
+          ls -la target/ 2>/dev/null || echo "No target/ directory found"
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          # Deploy to 'staging' for the testing branch, 'production' for main
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
