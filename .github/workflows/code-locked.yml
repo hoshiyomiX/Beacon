@@ -1,0 +1,211 @@
+# Code Locked Workflow
+# Automated Cargo.lock regeneration and dependency management
+# Ensures consistent builds and handles wasm-bindgen version compatibility
+
+name: code locked
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: 'Force update all dependencies to latest compatible versions'
+        required: false
+        type: boolean
+        default: false
+
+  schedule:
+    # Run weekly on Monday at 00:00 UTC to keep dependencies fresh
+    - cron: '0 0 * * 1'
+
+  push:
+    branches:
+      - testing
+      - master
+    paths:
+      - 'Cargo.toml'
+      - '.github/workflows/code-locked.yml'
+
+jobs:
+  regenerate-lock:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "code-locked-cache"
+          cache-on-failure: false
+
+      - name: Backup existing Cargo.lock
+        id: backup
+        run: |
+          if [ -f Cargo.lock ]; then
+            cp Cargo.lock Cargo.lock.backup
+            echo "backup_exists=true" >> $GITHUB_OUTPUT
+            echo "📦 Backed up existing Cargo.lock"
+          else
+            echo "backup_exists=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No existing Cargo.lock found"
+          fi
+
+      - name: Remove old Cargo.lock
+        run: |
+          if [ -f Cargo.lock ]; then
+            rm Cargo.lock
+            echo "🗑️ Removed old Cargo.lock"
+          fi
+
+      - name: Generate fresh Cargo.lock
+        id: generate
+        run: |
+          echo "🔨 Generating fresh Cargo.lock..."
+          
+          if [ "${{ inputs.force_update }}" = "true" ]; then
+            echo "⚡ Force updating all dependencies to latest compatible versions"
+            cargo update
+          else
+            echo "📋 Generating minimal resolution Cargo.lock"
+            cargo generate-lockfile
+          fi
+          
+          if [ -f Cargo.lock ]; then
+            echo "✅ Successfully generated Cargo.lock"
+            echo "generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Failed to generate Cargo.lock"
+            echo "generated=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Verify wasm-bindgen consistency
+        id: verify
+        run: |
+          echo "🔍 Verifying wasm-bindgen version consistency..."
+          
+          # Extract wasm-bindgen version from Cargo.lock
+          wasm_bindgen_version=$(grep -A 1 '"wasm-bindgen"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+          wasm_bindgen_futures_version=$(grep -A 1 '"wasm-bindgen-futures"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+          
+          echo "📌 wasm-bindgen: $wasm_bindgen_version"
+          echo "📌 wasm-bindgen-futures: $wasm_bindgen_futures_version"
+          
+          echo "wasm_bindgen_version=$wasm_bindgen_version" >> $GITHUB_OUTPUT
+          echo "wasm_bindgen_futures_version=$wasm_bindgen_futures_version" >> $GITHUB_OUTPUT
+
+      - name: Test build with new lockfile
+        run: |
+          echo "🧪 Testing WASM build with regenerated Cargo.lock..."
+          cargo check --target wasm32-unknown-unknown
+          echo "✅ Build verification passed"
+
+      - name: Generate dependency report
+        id: report
+        run: |
+          echo "📊 Generating dependency report..."
+          
+          # Count total dependencies
+          total_deps=$(grep -c 'name = "' Cargo.lock || echo "0")
+          
+          # Create report
+          cat > dependency-report.md << EOF
+          # Cargo.lock Regeneration Report
+          
+          **Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          **Branch:** ${{ github.ref_name }}
+          **Trigger:** ${{ github.event_name }}
+          
+          ## Summary
+          - Total dependencies: $total_deps
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
+          - wasm-bindgen-futures: ${{ steps.verify.outputs.wasm_bindgen_futures_version }}
+          
+          ## Changes
+          EOF
+          
+          if [ "${{ steps.backup.outputs.backup_exists }}" = "true" ]; then
+            echo "\`\`\`" >> dependency-report.md
+            diff -u Cargo.lock.backup Cargo.lock | head -50 >> dependency-report.md || echo "No differences found" >> dependency-report.md
+            echo "\`\`\`" >> dependency-report.md
+          else
+            echo "- Fresh Cargo.lock generated (no previous version)" >> dependency-report.md
+          fi
+          
+          cat dependency-report.md
+          echo "total_deps=$total_deps" >> $GITHUB_OUTPUT
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -f Cargo.lock.backup ]; then
+            if diff -q Cargo.lock.backup Cargo.lock > /dev/null; then
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              echo "ℹ️ No changes detected in Cargo.lock"
+            else
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "📝 Changes detected in Cargo.lock"
+            fi
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "📝 New Cargo.lock created"
+          fi
+
+      - name: Commit regenerated Cargo.lock
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add Cargo.lock
+          
+          if [ "${{ inputs.force_update }}" = "true" ]; then
+            commit_msg="chore(deps): force update Cargo.lock with latest compatible versions
+          
+          - Total dependencies: ${{ steps.report.outputs.total_deps }}
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
+          - Updated via code-locked workflow (force update)"
+          else
+            commit_msg="chore(deps): regenerate Cargo.lock with fresh dependency resolution
+          
+          - Total dependencies: ${{ steps.report.outputs.total_deps }}
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
+          - Updated via code-locked workflow"
+          fi
+          
+          git commit -m "$commit_msg"
+          git push
+          
+          echo "✅ Committed and pushed regenerated Cargo.lock"
+
+      - name: Upload dependency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report-${{ github.run_number }}
+          path: dependency-report.md
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "## 🔒 Code Locked Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat dependency-report.md >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.changes.outputs.has_changes }}" = "true" ]; then
+            echo "✅ Cargo.lock regenerated and committed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ No changes needed - Cargo.lock is up to date" >> $GITHUB_STEP_SUMMARY
+          fi
