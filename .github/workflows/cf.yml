@@ -1,122 +1,57 @@
-# Updated Cloudflare Workers deployment workflow
-# Removed manual wasm-bindgen-cli installation to let worker-build manage versions
-
-name: cf workers
+name: Deploy to Cloudflare Workers
 
 on:
-  workflow_dispatch:
-
   push:
     branches:
-      - '**'  # Trigger on all branches
-    paths-ignore:
-      - 'README.md'
-      - 'LICENSE.md'
+      - main
+      - testing
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: cf
+    name: Deploy
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Rust with caching
+      - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
-      # Enhanced Rust caching with Swatinem action
-      - name: Cache Rust dependencies and build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "beacon-wasm"
-          cache-on-failure: true
-          save-if: true  # Auto-save cache for all branches
-
-      # Cache build tools separately (rarely change)
-      - name: Cache build tools
-        uses: actions/cache@v4
-        id: tools-cache
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v3
         with:
           path: |
-            ~/.cargo/bin/worker-build
-            /usr/local/bin/wasm-opt
-          key: ${{ runner.os }}-build-tools-v8-worker-build-0.7.0-binaryen-119
-
-      # Install build tools only if not cached
-      - name: Install build tools
-        if: steps.tools-cache.outputs.cache-hit != 'true'
-        run: |
-          cargo install worker-build --version 0.7.0 --locked
-          # Install binaryen (provides wasm-opt)
-          sudo apt-get update
-          sudo apt-get install -y binaryen
-
-      # Check if Rust code changed to skip unnecessary rebuilds
-      - name: Check for code changes
-        id: changes
-        run: |
-          git fetch origin ${{ github.event.before }} --depth=1 2>/dev/null || true
-          if git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null | grep -qE '\.(rs|toml)$'; then
-            echo "rust_changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "rust_changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      # Cache the built worker artifact
-      - name: Cache built worker
-        if: steps.changes.outputs.rust_changed == 'false'
-        uses: actions/cache@v4
-        id: worker-cache
-        with:
-          path: build/
-          key: ${{ runner.os }}-worker-${{ hashFiles('Cargo.lock', 'src/**/*.rs') }}
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-worker-
+            ${{ runner.os }}-cargo-
 
-      # Build only if code changed or cache miss
-      - name: Build worker
-        if: steps.changes.outputs.rust_changed == 'true' || steps.worker-cache.outputs.cache-hit != 'true'
+      - name: Install worker-build
+        run: cargo install worker-build --locked
+
+      - name: Build WASM
+        run: worker-build --release
+
+      - name: Validate build artifact
         run: |
-          worker-build --release
-        env:
-          CARGO_INCREMENTAL: 1
-          CARGO_TERM_COLOR: always
+          if [ ! -f "build/worker/shim.wasm" ]; then
+            echo "❌ Build failed: WASM artifact not found at build/worker/shim.wasm"
+            exit 1
+          fi
+          echo "✅ Build successful. Artifact size: $(ls -lh build/worker/shim.wasm | awk '{print $5}')"
 
-      # Post-process WASM with wasm-opt for additional size reduction
-      - name: Optimize WASM with wasm-opt
-        if: steps.changes.outputs.rust_changed == 'true' || steps.worker-cache.outputs.cache-hit != 'true'
-        run: |
-          echo "Running wasm-opt for additional size optimization..."
-          for wasm_file in build/**/*.wasm; do
-            if [ -f "$wasm_file" ]; then
-              original_size=$(stat --format=%s "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
-              echo "Optimizing: $wasm_file (size: $original_size bytes)"
-              wasm-opt -Oz "$wasm_file" -o "${wasm_file}.opt"
-              mv "${wasm_file}.opt" "$wasm_file"
-              optimized_size=$(stat --format=%s "$wasm_file" 2>/dev/null || stat -c%s "$wasm_file")
-              reduction=$((original_size - optimized_size))
-              percent=$((reduction * 100 / original_size))
-              echo "✓ Optimized to $optimized_size bytes (saved $reduction bytes, $percent% reduction)"
-            fi
-          done
-
-      # Deploy with optimized settings
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          wranglerVersion: '3.90.0'
-          # Pass secrets as environment variables if needed
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      # Save build artifacts for potential rollback
-      - name: Upload build artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: worker-build-${{ github.sha }}
-          path: build/
-          retention-days: 7
-          compression-level: 9
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          # Deploy to 'staging' for the testing branch, 'production' for main
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+          
