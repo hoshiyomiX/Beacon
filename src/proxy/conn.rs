@@ -36,10 +36,11 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("connection aborted")
         || error_lower.contains("network error")
         || error_lower.contains("socket closed")
+        || error_lower.contains("timed out")
+        || error_lower.contains("timeout")
 }
 
-/// WASM-compatible bidirectional copy implementation
-/// Replaces tokio::io::copy_bidirectional for Cloudflare Workers compatibility
+/// WASM-compatible bidirectional copy with 30s timeout
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -48,105 +49,127 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut a_to_b: u64 = 0;
-    let mut b_to_a: u64 = 0;
-    let mut buf_a = vec![0u8; 8192];
-    let mut buf_b = vec![0u8; 8192];
+    use gloo_timers::future::TimeoutFuture;
+    
+    let transfer_future = async {
+        let mut a_to_b: u64 = 0;
+        let mut b_to_a: u64 = 0;
+        let mut buf_a = vec![0u8; 8192];
+        let mut buf_b = vec![0u8; 8192];
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 100_000; // Safety limit
 
-    loop {
-        // Create fresh futures each iteration to avoid borrow checker issues
-        let a_fut = a.read(&mut buf_a);
-        let b_fut = b.read(&mut buf_b);
-
-        futures_util::pin_mut!(a_fut, b_fut);
-
-        match futures_util::future::select(a_fut, b_fut).await {
-            futures_util::future::Either::Left((a_result, _)) => {
-                match a_result {
-                    Ok(0) => {
-                        // A reached EOF, shutdown write side of B and drain remaining data from B
-                        let _ = b.shutdown().await;
-                        loop {
-                            match b.read(&mut buf_b).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
-                                    b_to_a += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        b.write_all(&buf_a[..n]).await?;
-                        a_to_b += n as u64;
-                    }
-                    Err(e) if is_benign_error(&e.to_string()) => {
-                        // A closed with benign error, drain B
-                        let _ = b.shutdown().await;
-                        loop {
-                            match b.read(&mut buf_b).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
-                                    b_to_a += n as u64;
-                                }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        break;
-                    }
-                    Err(e) => return Err(e),
-                }
+        loop {
+            iterations += 1;
+            if iterations > MAX_ITERATIONS {
+                console_log!("[WARN] Transfer loop exceeded max iterations, terminating");
+                break;
             }
-            futures_util::future::Either::Right((b_result, _)) => {
-                match b_result {
-                    Ok(0) => {
-                        // B reached EOF, shutdown write side of A and drain remaining data from A
-                        let _ = a.shutdown().await;
-                        loop {
-                            match a.read(&mut buf_a).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
-                                    a_to_b += n as u64;
+
+            let a_fut = a.read(&mut buf_a);
+            let b_fut = b.read(&mut buf_b);
+
+            futures_util::pin_mut!(a_fut, b_fut);
+
+            match futures_util::future::select(a_fut, b_fut).await {
+                futures_util::future::Either::Left((a_result, _)) => {
+                    match a_result {
+                        Ok(0) => {
+                            let _ = b.shutdown().await;
+                            loop {
+                                match b.read(&mut buf_b).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        a.write_all(&buf_b[..n]).await?;
+                                        b_to_a += n as u64;
+                                    }
+                                    Err(e) if is_benign_error(&e.to_string()) => break,
+                                    Err(e) => return Err(e),
                                 }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
                             }
+                            break;
                         }
-                        break;
-                    }
-                    Ok(n) => {
-                        a.write_all(&buf_b[..n]).await?;
-                        b_to_a += n as u64;
-                    }
-                    Err(e) if is_benign_error(&e.to_string()) => {
-                        // B closed with benign error, drain A
-                        let _ = a.shutdown().await;
-                        loop {
-                            match a.read(&mut buf_a).await {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
-                                    a_to_b += n as u64;
+                        Ok(n) => {
+                            b.write_all(&buf_a[..n]).await?;
+                            a_to_b += n as u64;
+                        }
+                        Err(e) if is_benign_error(&e.to_string()) => {
+                            let _ = b.shutdown().await;
+                            loop {
+                                match b.read(&mut buf_b).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        a.write_all(&buf_b[..n]).await?;
+                                        b_to_a += n as u64;
+                                    }
+                                    Err(e) if is_benign_error(&e.to_string()) => break,
+                                    Err(e) => return Err(e),
                                 }
-                                Err(e) if is_benign_error(&e.to_string()) => break,
-                                Err(e) => return Err(e),
                             }
+                            break;
                         }
-                        break;
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
+                }
+                futures_util::future::Either::Right((b_result, _)) => {
+                    match b_result {
+                        Ok(0) => {
+                            let _ = a.shutdown().await;
+                            loop {
+                                match a.read(&mut buf_a).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        b.write_all(&buf_a[..n]).await?;
+                                        a_to_b += n as u64;
+                                    }
+                                    Err(e) if is_benign_error(&e.to_string()) => break,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            break;
+                        }
+                        Ok(n) => {
+                            a.write_all(&buf_b[..n]).await?;
+                            b_to_a += n as u64;
+                        }
+                        Err(e) if is_benign_error(&e.to_string()) => {
+                            let _ = a.shutdown().await;
+                            loop {
+                                match a.read(&mut buf_a).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        b.write_all(&buf_a[..n]).await?;
+                                        a_to_b += n as u64;
+                                    }
+                                    Err(e) if is_benign_error(&e.to_string()) => break,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
         }
-    }
 
-    Ok((a_to_b, b_to_a))
+        Ok((a_to_b, b_to_a))
+    };
+
+    // 30-second timeout for bidirectional transfer
+    let timeout = TimeoutFuture::new(30_000);
+    futures_util::pin_mut!(transfer_future);
+    
+    match futures_util::future::select(transfer_future, timeout).await {
+        futures_util::future::Either::Left((result, _)) => result,
+        futures_util::future::Either::Right(_) => {
+            console_log!("[TIMEOUT] Bidirectional copy exceeded 30s");
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Transfer timeout after 30s"
+            ))
+        }
+    }
 }
 
 impl<'a> ProxyStream<'a> {
@@ -163,30 +186,43 @@ impl<'a> ProxyStream<'a> {
     
     pub async fn fill_buffer_until(&mut self, n: usize) -> std::io::Result<()> {
         use futures_util::StreamExt;
+        use gloo_timers::future::TimeoutFuture;
 
-        while self.buffer.len() < n {
-            match self.events.next().await {
-                Some(Ok(WebsocketEvent::Message(msg))) => {
-                    if let Some(data) = msg.bytes() {
-                        self.buffer.put_slice(&data);
+        let fill_future = async {
+            while self.buffer.len() < n {
+                match self.events.next().await {
+                    Some(Ok(WebsocketEvent::Message(msg))) => {
+                        if let Some(data) = msg.bytes() {
+                            self.buffer.put_slice(&data);
+                        }
                     }
-                }
-                Some(Ok(WebsocketEvent::Close(_))) => {
-                    break;
-                }
-                Some(Err(e)) => {
-                    let error_msg = e.to_string();
-                    if !is_benign_error(&error_msg) {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+                    Some(Ok(WebsocketEvent::Close(_))) => break,
+                    Some(Err(e)) => {
+                        let error_msg = e.to_string();
+                        if !is_benign_error(&error_msg) {
+                            return Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg));
+                        }
+                        break;
                     }
-                    break;
-                }
-                None => {
-                    break;
+                    None => break,
                 }
             }
+            Ok(())
+        };
+
+        // 10-second timeout for buffer filling
+        let timeout = TimeoutFuture::new(10_000);
+        futures_util::pin_mut!(fill_future);
+        
+        match futures_util::future::select(fill_future, timeout).await {
+            futures_util::future::Either::Left((result, _)) => result,
+            futures_util::future::Either::Right(_) => {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Buffer fill timeout"
+                ))
+            }
         }
-        Ok(())
     }
 
     pub fn peek_buffer(&self, n: usize) -> &[u8] {
@@ -272,6 +308,8 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
+        use gloo_timers::future::TimeoutFuture;
+        
         if Self::is_http_port(port) {
             console_log!(
                 "[WARN] Connecting to {}:{} - This port is typically used for HTTP services. \
@@ -280,15 +318,26 @@ impl<'a> ProxyStream<'a> {
             );
         }
 
-        // Connect with error handling
-        let mut remote_socket = match Socket::builder().connect(&addr, port) {
-            Ok(socket) => socket,
-            Err(e) => {
+        // Connect with 30s timeout
+        let connect_future = async {
+            let mut remote_socket = Socket::builder().connect(&addr, port)?;
+            remote_socket.opened().await?;
+            Ok::<Socket, Error>(remote_socket)
+        };
+        
+        let timeout = TimeoutFuture::new(30_000);
+        futures_util::pin_mut!(connect_future);
+        
+        let mut remote_socket = match futures_util::future::select(connect_future, timeout).await {
+            futures_util::future::Either::Left((Ok(socket), _)) => {
+                console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
+                socket
+            },
+            futures_util::future::Either::Left((Err(e), _)) => {
                 let error_msg = e.to_string();
                 
-                // Benign connection errors - return Ok to suppress CF logging
                 if is_benign_error(&error_msg) {
-                    return Ok(()); // Silently drop
+                    return Ok(());
                 }
                 
                 if error_msg.contains("HTTP") || error_msg.contains("http") {
@@ -308,37 +357,16 @@ impl<'a> ProxyStream<'a> {
                     console_log!("[FATAL] Connection failed to {}:{} - {}", &addr, port, error_msg);
                     return Err(Error::RustError(format!("Connection failed to {}:{}: {}", &addr, port, error_msg)));
                 }
+            },
+            futures_util::future::Either::Right(_) => {
+                console_log!("[TIMEOUT] Connection to {}:{} timed out after 30s", &addr, port);
+                return Err(Error::RustError(format!(
+                    "Connection timeout to {}:{}", &addr, port
+                )));
             }
         };
 
-        // Wait for socket to open
-        match remote_socket.opened().await {
-            Ok(_) => {},
-            Err(e) => {
-                let error_msg = e.to_string();
-                
-                // Benign socket open errors - return Ok to suppress CF logging
-                if is_benign_error(&error_msg) {
-                    return Ok(()); // Silently drop
-                }
-                
-                console_log!("[FATAL] Socket open failed for {}:{} - {}", &addr, port, error_msg);
-                
-                if error_msg.contains("HTTP") || error_msg.contains("http") {
-                    return Err(Error::RustError(format!(
-                        "HTTP service detected at {}:{}. This proxy destination appears to be an HTTP service. \
-                        Please verify your proxy configuration points to a raw TCP service.",
-                        &addr, port
-                    )));
-                } else {
-                    return Err(Error::RustError(format!("Socket open failed for {}:{}: {}", &addr, port, error_msg)));
-                }
-            }
-        }
-
-        console_log!("[SUCCESS] Connected to {}:{}", &addr, port);
-
-        // WASM-compatible bidirectional copy - replaces tokio::io::copy_bidirectional
+        // WASM-compatible bidirectional copy with timeout
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 console_log!("[STATS] Data transfer from {}:{} completed - up: {} / dl: {}", 
@@ -348,9 +376,7 @@ impl<'a> ProxyStream<'a> {
             Err(e) => {
                 let error_msg = e.to_string();
                 
-                // THIS IS THE KEY FIX: Benign transfer errors return Ok() to suppress CF error logs
                 if is_benign_error(&error_msg) {
-                    // Connection naturally closed - not an error
                     return Ok(());
                 }
                 
@@ -361,7 +387,6 @@ impl<'a> ProxyStream<'a> {
     }
 
     pub async fn handle_udp_outbound(&mut self) -> Result<()> {
-        // Reduced buffer size for DNS to 4096 bytes for memory efficiency
         let mut buff = vec![0u8; 4096];
 
         let n = self.read(&mut buff).await?;
@@ -423,7 +448,6 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
                 .map_err(|e| {
                     let error_msg = e.to_string();
                     if is_benign_error(&error_msg) {
-                        // Silently handle benign write errors - return BrokenPipe for normal handling
                         std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
                     } else {
                         std::io::Error::new(std::io::ErrorKind::Other, error_msg)
