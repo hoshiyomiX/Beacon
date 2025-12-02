@@ -38,10 +38,10 @@ jobs:
 
       - name: Build WASM
         run: |
-        worker-build --release --verbose
-        echo "Build completed. Checking output directory..."
-        ls -la build/ || echo "No build directory found"
-        find . -name "*.wasm" -type f || echo "No WASM files found"
+          worker-build --release --verbose
+          echo "Build completed. Checking output directory..."
+          ls -la build/ || echo "No build directory found"
+          find . -name "*.wasm" -type f || echo "No WASM files found"
 
       - name: Validate build artifact
         run: |
@@ -58,4 +58,3 @@ jobs:
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
           # Deploy to 'staging' for the testing branch, 'production' for main
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-          
