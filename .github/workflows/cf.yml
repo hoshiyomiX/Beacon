@@ -23,8 +23,11 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Downgrade wasm-bindgen to 0.2.105
+        run: cargo update -p wasm-bindgen --precise 0.2.105
+
       - name: Install wasm-bindgen-cli
-        run: cargo install -f wasm-bindgen-cli --version 0.2.100
+        run: cargo install -f wasm-bindgen-cli --version 0.2.105
 
       - name: Install worker-build
         run: cargo install -q worker-build
