@@ -104,28 +104,6 @@ jobs:
           echo ""
           echo "=== All build artifacts validated successfully ==="
 
-      - name: Validate wrangler.toml before modification
-        run: |
-          echo "=== wrangler.toml Pre-Deployment Validation ==="
-          if [ ! -f "wrangler.toml" ]; then
-            echo "❌ Error: wrangler.toml not found"
-            exit 1
-          fi
-          echo "✅ wrangler.toml exists"
-          echo ""
-          echo "Current wrangler.toml content:"
-          cat wrangler.toml
-
-      - name: Remove build command from wrangler.toml
-        run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
-
-      - name: Validate modified wrangler.toml
-        run: |
-          echo "=== Modified wrangler.toml ==="
-          cat wrangler.toml
-          echo ""
-          echo "✅ Build command section removed successfully"
-
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
