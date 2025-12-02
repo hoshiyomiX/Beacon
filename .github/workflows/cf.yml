@@ -1,3 +1,6 @@
+# Updated Cloudflare Workers deployment workflow
+# Removed manual wasm-bindgen-cli installation to let worker-build manage versions
+
 name: cf workers
 
 on:
