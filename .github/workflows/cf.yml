@@ -38,7 +38,7 @@ jobs:
           path: |
             ~/.cargo/bin/worker-build
             /usr/local/bin/wasm-opt
-          key: ${{ runner.os }}-build-tools-v7-worker-build-0.7.0-binaryen-119
+          key: ${{ runner.os }}-build-tools-v8-worker-build-0.7.0-binaryen-119
 
       # Install build tools only if not cached
       - name: Install build tools
