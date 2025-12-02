@@ -1,6 +1,8 @@
 # Rust
 target/
-Cargo.lock
 
 # General
 .DS_Store
+
+# Note: Cargo.lock is now tracked to ensure reproducible builds
+# This prevents wasm-bindgen version mismatches between local/CI/deployment
