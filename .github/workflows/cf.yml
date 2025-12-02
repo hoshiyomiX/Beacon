@@ -19,9 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Downgrade wasm-bindgen to 0.2.105
         run: cargo update -p wasm-bindgen --precise 0.2.105
