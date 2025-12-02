@@ -20,33 +20,40 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
-      - name: Downgrade wasm-bindgen to 0.2.105
-        run: cargo update -p wasm-bindgen --precise 0.2.105
-
-      - name: Install wasm-bindgen-cli
-        run: cargo install -f wasm-bindgen-cli --version 0.2.105
+      - name: Install wasm-bindgen-cli 0.2.105
+        run: |
+          cargo install -f wasm-bindgen-cli --version 0.2.105
+          wasm-bindgen --version
 
       - name: Install worker-build
         run: cargo install -q worker-build
 
-      - name: Poison the cache
+      - name: Build WASM
         run: |
-          # Run a build that is expected to fail to populate the cache
-          worker-build --release || true
-          # Find the incorrect wasm-bindgen binary in the cache
-          WASM_BINDGEN_CACHE_PATH=$(find ~/.cache/worker-build -type f -name "wasm-bindgen")
-          echo "Found wasm-bindgen at: $WASM_BINDGEN_CACHE_PATH"
-          # Overwrite the incorrect cached binary with the correct one
-          cp "$(which wasm-bindgen)" "$WASM_BINDGEN_CACHE_PATH"
+          echo "Building with wasm-bindgen 0.2.105 (pinned in Cargo.toml)"
+          worker-build --release
 
-      - name: Build
-        run: worker-build --release
+      - name: Verify build artifacts
+        run: |
+          echo "Checking for build artifacts..."
+          ls -lah build/
+          if [ ! -f "build/index.js" ]; then
+            echo "Error: build/index.js not found"
+            exit 1
+          fi
+          if [ ! -f "build/index.wasm" ]; then
+            echo "Error: build/index.wasm not found"
+            exit 1
+          fi
+          echo "Build artifacts verified successfully"
 
       - name: Remove build command from wrangler.toml
         run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
 
-      - name: Deploy
+      - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
