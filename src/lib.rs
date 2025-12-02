@@ -136,11 +136,17 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
-        server.accept()?;
-
-        // WASM-compatible spawn with 30-second timeout protection
+        
+        // Spawn WebSocket processing task BEFORE accepting to avoid race condition
+        // This ensures the response is returned immediately while processing happens async
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
+            
+            // Accept connection inside spawned task to avoid blocking response
+            if let Err(e) = server.accept() {
+                console_log!("[ERROR] Failed to accept WebSocket: {}", e);
+                return;
+            }
             
             // Wrap processing in timeout to prevent unresolved promises
             let process_future = async {
@@ -156,11 +162,13 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                 };
 
                 match ProxyStream::new(cx.data, &server, events).process().await {
-                    Ok(_) => {},
+                    Ok(_) => {
+                        console_log!("[INFO] Proxy stream completed successfully");
+                    },
                     Err(e) => {
                         let error_msg = e.to_string();
                         if !is_benign_error(&error_msg) {
-                            console_log!("[FATAL] Proxy processing error: {}", error_msg);
+                            console_log!("[ERROR] Proxy processing failed: {}", error_msg);
                         }
                     }
                 }
@@ -173,6 +181,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             match futures_util::future::select(process_future, timeout).await {
                 futures_util::future::Either::Left(_) => {
                     // Completed within timeout
+                    console_log!("[INFO] WebSocket processing completed within timeout");
                 },
                 futures_util::future::Either::Right(_) => {
                     // Timeout occurred - close WebSocket gracefully
@@ -182,6 +191,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             }
         });
 
+        // Return WebSocket response immediately - processing happens in spawned task
         Response::from_websocket(client)
     } else {
         Response::from_html("hi from wasm!")
