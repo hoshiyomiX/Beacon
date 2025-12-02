@@ -37,7 +37,11 @@ jobs:
         run: cargo install worker-build --locked
 
       - name: Build WASM
-        run: worker-build --release
+        run: |
+        worker-build --release --verbose
+        echo "Build completed. Checking output directory..."
+        ls -la build/ || echo "No build directory found"
+        find . -name "*.wasm" -type f || echo "No WASM files found"
 
       - name: Validate build artifact
         run: |
