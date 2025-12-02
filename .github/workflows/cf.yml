@@ -39,13 +39,13 @@ jobs:
             ~/.cargo/bin/wasm-bindgen
             ~/.cargo/bin/worker-build
             /usr/local/bin/wasm-opt
-          key: ${{ runner.os }}-build-tools-v5-wasm-bindgen-latest-worker-build-0.7.0-binaryen-119
+          key: ${{ runner.os }}-build-tools-v6-wasm-bindgen-0.2.106-worker-build-0.7.0-binaryen-119
 
       # Install build tools only if not cached
       - name: Install build tools
         if: steps.tools-cache.outputs.cache-hit != 'true'
         run: |
-          cargo install wasm-bindgen-cli --locked
+          cargo install wasm-bindgen-cli --version 0.2.106 --locked
           cargo install worker-build --version 0.7.0 --locked
           # Install binaryen (provides wasm-opt)
           sudo apt-get update
