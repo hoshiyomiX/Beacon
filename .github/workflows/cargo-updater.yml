@@ -1,0 +1,273 @@
+name: Cargo.lock Updater
+
+# Simple and reliable Cargo.lock updater with version pinning
+# Regenerates Cargo.lock while maintaining compatibility versions
+# Pinned versions: wasm-bindgen 0.2.105, worker 0.4.2, wasm-bindgen-futures 0.4.55
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight UTC
+
+jobs:
+  update-cargo-lock:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout beta branch
+        uses: actions/checkout@v4
+        with:
+          ref: beta
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      
+      - name: Backup files
+        run: |
+          if [ -f Cargo.lock ]; then
+            cp Cargo.lock Cargo.lock.backup
+            echo "✅ Backed up existing Cargo.lock"
+          else
+            echo "ℹ️  No existing Cargo.lock to backup"
+          fi
+          cp Cargo.toml Cargo.toml.backup
+          echo "✅ Backed up Cargo.toml"
+      
+      - name: Pin compatibility versions in Cargo.toml
+        run: |
+          echo "📌 Ensuring pinned versions in Cargo.toml..."
+          
+          # Pin critical versions for Cloudflare Workers compatibility
+          sed -i 's/^wasm-bindgen = "[^"]*"/wasm-bindgen = "0.2.105"/' Cargo.toml
+          sed -i 's/^worker = "[^"]*"/worker = "0.4.2"/' Cargo.toml
+          sed -i 's/^wasm-bindgen-futures = "[^"]*"/wasm-bindgen-futures = "0.4.55"/' Cargo.toml
+          
+          echo "✅ Pinned versions in Cargo.toml:"
+          echo "  - wasm-bindgen: 0.2.105"
+          echo "  - worker: 0.4.2"
+          echo "  - wasm-bindgen-futures: 0.4.55"
+      
+      - name: Remove and regenerate Cargo.lock
+        id: regenerate
+        run: |
+          echo "🔄 Regenerating Cargo.lock from Cargo.toml..."
+          rm -f Cargo.lock
+          cargo generate-lockfile
+          echo "✅ Cargo.lock regenerated successfully"
+      
+      - name: Verify build compatibility
+        id: verify
+        run: |
+          echo "🔨 Verifying build with new Cargo.lock..."
+          cargo check --target wasm32-unknown-unknown --release
+          echo "✅ Build verification passed"
+      
+      - name: Extract key dependency versions
+        id: versions
+        run: |
+          echo "📊 Extracting dependency versions from Cargo.lock..."
+          
+          WASM_BINDGEN=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "wasm-bindgen"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          WORKER=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "worker"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          WASM_FUTURES=$(grep -A 2 '\[\[package\]\]' Cargo.lock | grep -A 2 'name = "wasm-bindgen-futures"' | grep 'version' | head -1 | cut -d'"' -f2 || echo "N/A")
+          
+          echo "wasm_bindgen=$WASM_BINDGEN" >> $GITHUB_OUTPUT
+          echo "worker=$WORKER" >> $GITHUB_OUTPUT
+          echo "wasm_futures=$WASM_FUTURES" >> $GITHUB_OUTPUT
+          
+          echo "Key dependencies in new Cargo.lock:"
+          echo "  - wasm-bindgen: $WASM_BINDGEN"
+          echo "  - worker: $WORKER"
+          echo "  - wasm-bindgen-futures: $WASM_FUTURES"
+      
+      - name: Verify pinned versions match
+        run: |
+          echo "🔍 Verifying pinned versions..."
+          
+          WASM_BINDGEN="${{ steps.versions.outputs.wasm_bindgen }}"
+          WORKER="${{ steps.versions.outputs.worker }}"
+          WASM_FUTURES="${{ steps.versions.outputs.wasm_futures }}"
+          
+          ERRORS=0
+          
+          if [ "$WASM_BINDGEN" != "0.2.105" ]; then
+            echo "❌ ERROR: wasm-bindgen version mismatch!"
+            echo "   Expected: 0.2.105"
+            echo "   Got: $WASM_BINDGEN"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ wasm-bindgen: 0.2.105"
+          fi
+          
+          if [ "$WORKER" != "0.4.2" ]; then
+            echo "❌ ERROR: worker version mismatch!"
+            echo "   Expected: 0.4.2"
+            echo "   Got: $WORKER"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ worker: 0.4.2"
+          fi
+          
+          if [ "$WASM_FUTURES" != "0.4.55" ]; then
+            echo "❌ ERROR: wasm-bindgen-futures version mismatch!"
+            echo "   Expected: 0.4.55"
+            echo "   Got: $WASM_FUTURES"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ wasm-bindgen-futures: 0.4.55"
+          fi
+          
+          if [ $ERRORS -gt 0 ]; then
+            echo "❌ Version verification failed with $ERRORS error(s)"
+            exit 1
+          fi
+          
+          echo "✅ All pinned versions verified successfully"
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Update or verification failed - Rolling back..."
+          
+          if [ -f Cargo.toml.backup ]; then
+            cp Cargo.toml.backup Cargo.toml
+            echo "✅ Restored Cargo.toml from backup"
+          fi
+          
+          if [ -f Cargo.lock.backup ]; then
+            cp Cargo.lock.backup Cargo.lock
+            echo "✅ Restored Cargo.lock from backup"
+          fi
+          
+          echo "## ❌ Cargo.lock Update Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The Cargo.lock regeneration failed and has been rolled back." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pinned Versions (Required)" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen: 0.2.105" >> $GITHUB_STEP_SUMMARY
+          echo "- worker: 0.4.2" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen-futures: 0.4.55" >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+      
+      - name: Check for changes
+        id: changes
+        run: |
+          # Check if Cargo.toml was modified (should not be if already pinned)
+          TOML_CHANGED=false
+          if ! git diff --exit-code Cargo.toml; then
+            TOML_CHANGED=true
+            echo "ℹ️  Cargo.toml updated with pinned versions"
+          fi
+          
+          # Check if Cargo.lock changed
+          LOCK_CHANGED=false
+          if ! git diff --exit-code Cargo.lock; then
+            LOCK_CHANGED=true
+            echo "✅ Cargo.lock has changes"
+          fi
+          
+          if [ "$TOML_CHANGED" = true ] || [ "$LOCK_CHANGED" = true ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "toml_changed=$TOML_CHANGED" >> $GITHUB_OUTPUT
+            echo "lock_changed=$LOCK_CHANGED" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No changes needed - already up-to-date"
+          fi
+      
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: regenerate Cargo.lock with pinned versions"
+          title: "🔄 Regenerate Cargo.lock [beta]"
+          body: |
+            ## 🔄 Cargo.lock Regenerated
+            
+            **Target Branch:** `beta`
+            **Action:** Cargo.lock regenerated with pinned compatibility versions
+            
+            ### What Changed
+            - ✅ Cargo.lock regenerated using `cargo generate-lockfile`
+            - 📌 Critical versions pinned in Cargo.toml (if needed)
+            - ✅ Build verification passed for wasm32-unknown-unknown target
+            - ✅ Version verification passed
+            
+            ### Pinned Versions (Cloudflare Workers Compatibility)
+            | Package | Version | Reason |
+            |---------|---------|--------|
+            | **wasm-bindgen** | `0.2.105` | 📌 Required for worker-build compatibility |
+            | **worker** | `0.4.2` | 📌 Stable release for Cloudflare Workers |
+            | **wasm-bindgen-futures** | `0.4.55` | 📌 Compatible with wasm-bindgen 0.2.105 |
+            
+            ### Verified Versions in Cargo.lock
+            - ✅ **wasm-bindgen:** `${{ steps.versions.outputs.wasm_bindgen }}`
+            - ✅ **worker:** `${{ steps.versions.outputs.worker }}`
+            - ✅ **wasm-bindgen-futures:** `${{ steps.versions.outputs.wasm_futures }}`
+            
+            ### Changes Made
+            ${{ steps.changes.outputs.toml_changed == 'true' && '- ✅ Cargo.toml updated with pinned versions' || '- ℹ️  Cargo.toml already had correct pinned versions' }}
+            ${{ steps.changes.outputs.lock_changed == 'true' && '- ✅ Cargo.lock regenerated' || '- ℹ️  Cargo.lock unchanged' }}
+            
+            ### Why These Versions?
+            - **wasm-bindgen 0.2.105**: Last version compatible with worker-build 0.1.x
+            - **worker 0.4.2**: Stable and tested with Cloudflare Workers runtime
+            - **wasm-bindgen-futures 0.4.55**: Matches wasm-bindgen 0.2.105 compatibility
+            
+            ### Verification
+            - ✅ Cargo.lock regenerated successfully
+            - ✅ Version pinning verified
+            - ✅ Build check passed
+            - ✅ All dependencies resolved
+            
+            ### Next Steps
+            1. Review the lockfile changes
+            2. Merge to apply the updated Cargo.lock
+            3. Deployment workflow will use the new lockfile with pinned versions
+            
+            ---
+            *Auto-generated by cargo-lock-updater.yml workflow*
+            *Triggered by: @${{ github.actor }}*
+          branch: chore/regenerate-cargo-lock-${{ github.run_number }}
+          base: beta
+          labels: dependencies, cargo-lock, automated, pinned-versions
+          delete-branch: true
+      
+      - name: Success Summary
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          echo "## ✅ Cargo.lock Successfully Regenerated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Process" >> $GITHUB_STEP_SUMMARY
+          echo "1. ✅ Ensured pinned versions in Cargo.toml" >> $GITHUB_STEP_SUMMARY
+          echo "2. ✅ Removed old Cargo.lock" >> $GITHUB_STEP_SUMMARY
+          echo "3. ✅ Ran \`cargo generate-lockfile\`" >> $GITHUB_STEP_SUMMARY
+          echo "4. ✅ Verified build compatibility" >> $GITHUB_STEP_SUMMARY
+          echo "5. ✅ Verified pinned versions" >> $GITHUB_STEP_SUMMARY
+          echo "6. ✅ Created pull request" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pinned Versions (Verified)" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen:** ${{ steps.versions.outputs.wasm_bindgen }} ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **worker:** ${{ steps.versions.outputs.worker }} ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen-futures:** ${{ steps.versions.outputs.wasm_futures }} ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ℹ️  Note" >> $GITHUB_STEP_SUMMARY
+          echo "These versions are pinned for Cloudflare Workers compatibility." >> $GITHUB_STEP_SUMMARY
+          echo "Other dependencies update to their latest compatible versions." >> $GITHUB_STEP_SUMMARY
+      
+      - name: No Changes Summary
+        if: steps.changes.outputs.changed == 'false'
+        run: |
+          echo "## ℹ️  Cargo.lock Already Up-to-Date" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The regenerated Cargo.lock matches the existing file. No changes needed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Current Pinned Versions (Verified)" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen:** ${{ steps.versions.outputs.wasm_bindgen }} ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **worker:** ${{ steps.versions.outputs.worker }} ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- **wasm-bindgen-futures:** ${{ steps.versions.outputs.wasm_futures }} ✅" >> $GITHUB_STEP_SUMMARY
