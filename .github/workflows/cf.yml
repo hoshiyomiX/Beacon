@@ -37,22 +37,94 @@ jobs:
           echo "Building with wasm-bindgen 0.2.105 (pinned in Cargo.toml)"
           worker-build --release
 
+      - name: Inspect workspace structure
+        run: |
+          echo "=== Workspace Structure ==="
+          echo "Root directory:"
+          ls -lah
+          echo ""
+          echo "Build directory tree:"
+          if [ -d "build" ]; then
+            find build -type f -exec ls -lh {} \;
+          else
+            echo "⚠️  build/ directory not found"
+          fi
+          echo ""
+          echo "Searching for WASM artifacts in entire workspace:"
+          find . -name "*.wasm" -o -name "index.js" | head -20
+
       - name: Verify build artifacts
         run: |
-          echo "Checking for build artifacts..."
-          ls -lah build/
+          echo "=== Build Artifact Validation ==="
+          
+          # Check if build directory exists
+          if [ ! -d "build" ]; then
+            echo "❌ Error: build/ directory not found"
+            exit 1
+          fi
+          
+          # Check for index.js
           if [ ! -f "build/index.js" ]; then
-            echo "Error: build/index.js not found"
+            echo "❌ Error: build/index.js not found"
             exit 1
           fi
+          JS_SIZE=$(stat -f%z "build/index.js" 2>/dev/null || stat -c%s "build/index.js")
+          echo "✅ index.js found (${JS_SIZE} bytes)"
+          
+          # Check for index.wasm
           if [ ! -f "build/index.wasm" ]; then
-            echo "Error: build/index.wasm not found"
+            echo "❌ Error: build/index.wasm not found"
             exit 1
           fi
-          echo "Build artifacts verified successfully"
+          WASM_SIZE=$(stat -f%z "build/index.wasm" 2>/dev/null || stat -c%s "build/index.wasm")
+          WASM_SIZE_MB=$(echo "scale=2; $WASM_SIZE / 1024 / 1024" | bc)
+          echo "✅ index.wasm found (${WASM_SIZE} bytes / ${WASM_SIZE_MB} MB)"
+          
+          # Validate WASM file is not empty
+          if [ "$WASM_SIZE" -lt 1000 ]; then
+            echo "⚠️  Warning: WASM file seems unusually small (${WASM_SIZE} bytes)"
+          fi
+          
+          # Check Cloudflare Workers size limit (1MB for free tier, 10MB for paid)
+          if [ "$WASM_SIZE" -gt 10485760 ]; then
+            echo "❌ Error: WASM file exceeds 10MB Cloudflare Workers limit"
+            exit 1
+          elif [ "$WASM_SIZE" -gt 1048576 ]; then
+            echo "⚠️  Warning: WASM file exceeds 1MB (free tier limit)"
+          fi
+          
+          # Validate WASM magic number
+          MAGIC=$(xxd -l 4 -p build/index.wasm)
+          if [ "$MAGIC" != "0061736d" ]; then
+            echo "❌ Error: Invalid WASM file (magic number: $MAGIC, expected: 0061736d)"
+            exit 1
+          fi
+          echo "✅ WASM magic number validated"
+          
+          echo ""
+          echo "=== All build artifacts validated successfully ==="
+
+      - name: Validate wrangler.toml before modification
+        run: |
+          echo "=== wrangler.toml Pre-Deployment Validation ==="
+          if [ ! -f "wrangler.toml" ]; then
+            echo "❌ Error: wrangler.toml not found"
+            exit 1
+          fi
+          echo "✅ wrangler.toml exists"
+          echo ""
+          echo "Current wrangler.toml content:"
+          cat wrangler.toml
 
       - name: Remove build command from wrangler.toml
         run: sed -i '/^\[build\]$/,/^command/d' wrangler.toml
+
+      - name: Validate modified wrangler.toml
+        run: |
+          echo "=== Modified wrangler.toml ==="
+          cat wrangler.toml
+          echo ""
+          echo "✅ Build command section removed successfully"
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
