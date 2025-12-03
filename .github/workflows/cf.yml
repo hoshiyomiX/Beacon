@@ -57,6 +57,13 @@ jobs:
         run: |
           echo "=== Build Artifact Validation ==="
           
+          # Check if build directory exists
+          if [ ! -d "build" ]; then
+            echo "❌ Error: build/ directory not found"
+            exit 1
+          fi
+          echo "✅ build/ directory found"
+          
           # Check if build/worker directory exists (worker-build output location)
           if [ ! -d "build/worker" ]; then
             echo "❌ Error: build/worker/ directory not found"
@@ -73,15 +80,22 @@ jobs:
           SHIM_SIZE=$(stat -c%s "build/worker/shim.mjs" 2>/dev/null || stat -f%z "build/worker/shim.mjs")
           echo "✅ shim.mjs found (${SHIM_SIZE} bytes)"
           
-          # Check for WASM file (worker-build generates index_bg.wasm)
+          # Check for WASM file (worker-build generates index_bg.wasm in build/ root)
           WASM_FILE=""
-          if [ -f "build/worker/index_bg.wasm" ]; then
+          if [ -f "build/index_bg.wasm" ]; then
+            WASM_FILE="build/index_bg.wasm"
+          elif [ -f "build/worker/index_bg.wasm" ]; then
             WASM_FILE="build/worker/index_bg.wasm"
           elif [ -f "build/index.wasm" ]; then
             WASM_FILE="build/index.wasm"
           else
             echo "❌ Error: WASM file not found in expected locations"
-            echo "Checked: build/worker/index_bg.wasm, build/index.wasm"
+            echo "Checked: build/index_bg.wasm, build/worker/index_bg.wasm, build/index.wasm"
+            echo ""
+            echo "Contents of build/:"
+            ls -la build/ || true
+            echo ""
+            echo "Contents of build/worker/:"
             ls -la build/worker/ || true
             exit 1
           fi
@@ -111,7 +125,16 @@ jobs:
           fi
           echo "✅ WASM magic number validated"
           
-          # List all files in build/worker for verification
+          # Check for index.js (JavaScript glue code)
+          if [ -f "build/index.js" ]; then
+            JS_SIZE=$(stat -c%s "build/index.js" 2>/dev/null || stat -f%z "build/index.js")
+            echo "✅ index.js found (${JS_SIZE} bytes)"
+          fi
+          
+          # List all files in build/ for verification
+          echo ""
+          echo "=== Contents of build/ ==="
+          ls -lh build/
           echo ""
           echo "=== Contents of build/worker/ ==="
           ls -lh build/worker/
