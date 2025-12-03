@@ -145,6 +145,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             // Accept connection inside spawned task to avoid blocking response
             if let Err(e) = server.accept() {
                 console_log!("[ERROR] Failed to accept WebSocket: {}", e);
+                let _ = server.close(Some(1011), Some("Failed to accept connection".to_string()));
                 return;
             }
             
@@ -157,6 +158,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                         if !is_benign_error(&error_msg) {
                             console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
                         }
+                        let _ = server.close(Some(1011), Some("Failed to get events".to_string()));
                         return;
                     }
                 };
@@ -164,12 +166,16 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                 match ProxyStream::new(cx.data, &server, events).process().await {
                     Ok(_) => {
                         console_log!("[INFO] Proxy stream completed successfully");
+                        // Explicit close on success with normal closure code
+                        let _ = server.close(Some(1000), Some("Normal closure".to_string()));
                     },
                     Err(e) => {
                         let error_msg = e.to_string();
                         if !is_benign_error(&error_msg) {
                             console_log!("[ERROR] Proxy processing failed: {}", error_msg);
                         }
+                        // Explicit close on error with internal error code
+                        let _ = server.close(Some(1011), Some("Internal error".to_string()));
                     }
                 }
             };
@@ -180,11 +186,11 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             
             match futures_util::future::select(process_future, timeout).await {
                 futures_util::future::Either::Left(_) => {
-                    // Completed within timeout
+                    // Completed within timeout - close handler already called in process_future
                     console_log!("[INFO] WebSocket processing completed within timeout");
                 },
                 futures_util::future::Either::Right(_) => {
-                    // Timeout occurred - close WebSocket gracefully
+                    // Timeout occurred - close WebSocket gracefully with timeout code
                     console_log!("[TIMEOUT] WebSocket processing exceeded 30s, closing connection");
                     let _ = server.close(Some(1008), Some("Processing timeout".to_string()));
                 }
