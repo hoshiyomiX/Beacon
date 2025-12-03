@@ -62,6 +62,37 @@ jobs:
             echo "ℹ️ No existing Cargo.lock found"
           fi
 
+      - name: Enforce wasm-bindgen version pinning
+        id: pin_wasm_bindgen
+        run: |
+          echo "📌 Enforcing wasm-bindgen version pinning to 0.2.106..."
+          
+          # Define the required versions
+          WASM_BINDGEN_VERSION="0.2.106"
+          WASM_BINDGEN_FUTURES_VERSION="0.4.56"
+          
+          # Verify Cargo.toml has correct pinning
+          echo "🔍 Verifying Cargo.toml pinning..."
+          
+          if grep -q 'wasm-bindgen = "=0.2.106"' Cargo.toml; then
+            echo "✅ wasm-bindgen correctly pinned to =0.2.106"
+          else
+            echo "⚠️ wasm-bindgen not properly pinned in Cargo.toml"
+            echo "Expected: wasm-bindgen = \"=0.2.106\""
+            exit 1
+          fi
+          
+          if grep -q 'wasm-bindgen-futures = "=0.4.56"' Cargo.toml; then
+            echo "✅ wasm-bindgen-futures correctly pinned to =0.4.56"
+          else
+            echo "⚠️ wasm-bindgen-futures not properly pinned in Cargo.toml"
+            echo "Expected: wasm-bindgen-futures = \"=0.4.56\""
+            exit 1
+          fi
+          
+          echo "wasm_bindgen_version=$WASM_BINDGEN_VERSION" >> $GITHUB_OUTPUT
+          echo "wasm_bindgen_futures_version=$WASM_BINDGEN_FUTURES_VERSION" >> $GITHUB_OUTPUT
+
       - name: Remove old Cargo.lock
         run: |
           if [ -f Cargo.lock ]; then
@@ -69,14 +100,18 @@ jobs:
             echo "🗑️ Removed old Cargo.lock"
           fi
 
-      - name: Generate fresh Cargo.lock
+      - name: Generate fresh Cargo.lock with pinned versions
         id: generate
         run: |
-          echo "🔨 Generating fresh Cargo.lock..."
+          echo "🔨 Generating fresh Cargo.lock with pinned wasm-bindgen versions..."
           
           if [ "${{ inputs.force_update }}" = "true" ]; then
-            echo "⚡ Force updating all dependencies to latest compatible versions"
+            echo "⚡ Force updating all dependencies except wasm-bindgen ecosystem"
+            # Update all but keep wasm-bindgen pinned
             cargo update
+            # Force wasm-bindgen and related back to pinned versions
+            cargo update wasm-bindgen --precise ${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_version }}
+            cargo update wasm-bindgen-futures --precise ${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_futures_version }}
           else
             echo "📋 Generating minimal resolution Cargo.lock"
             cargo generate-lockfile
@@ -91,20 +126,59 @@ jobs:
             exit 1
           fi
 
-      - name: Verify wasm-bindgen consistency
+      - name: Verify wasm-bindgen ecosystem consistency
         id: verify
         run: |
-          echo "🔍 Verifying wasm-bindgen version consistency..."
+          echo "🔍 Verifying wasm-bindgen ecosystem version consistency..."
           
-          # Extract wasm-bindgen version from Cargo.lock
-          wasm_bindgen_version=$(grep -A 1 '"wasm-bindgen"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
-          wasm_bindgen_futures_version=$(grep -A 1 '"wasm-bindgen-futures"' Cargo.lock | grep version | head -1 | cut -d'"' -f2)
+          # Extract all wasm-bindgen related versions from Cargo.lock
+          wasm_bindgen_version=$(grep -A 1 'name = "wasm-bindgen"$' Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+          wasm_bindgen_futures_version=$(grep -A 1 'name = "wasm-bindgen-futures"$' Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
           
-          echo "📌 wasm-bindgen: $wasm_bindgen_version"
-          echo "📌 wasm-bindgen-futures: $wasm_bindgen_futures_version"
+          echo "📌 Core wasm-bindgen packages:"
+          echo "   wasm-bindgen: $wasm_bindgen_version"
+          echo "   wasm-bindgen-futures: $wasm_bindgen_futures_version"
           
+          # Find all wasm-bindgen-* packages
+          echo ""
+          echo "📌 Additional wasm-bindgen packages found:"
+          wasm_bindgen_packages=$(grep 'name = "wasm-bindgen' Cargo.lock | cut -d'"' -f2 | sort -u)
+          
+          declare -a package_list=()
+          while IFS= read -r pkg; do
+            if [ ! -z "$pkg" ]; then
+              pkg_version=$(grep -A 1 "name = \"$pkg\"$" Cargo.lock | grep '^version = ' | head -1 | cut -d'"' -f2)
+              echo "   $pkg: $pkg_version"
+              package_list+=("$pkg:$pkg_version")
+            fi
+          done <<< "$wasm_bindgen_packages"
+          
+          # Verify core versions match requirements
+          if [ "$wasm_bindgen_version" != "${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_version }}" ]; then
+            echo ""
+            echo "❌ ERROR: wasm-bindgen version mismatch!"
+            echo "   Expected: ${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_version }}"
+            echo "   Found: $wasm_bindgen_version"
+            exit 1
+          fi
+          
+          if [ "$wasm_bindgen_futures_version" != "${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_futures_version }}" ]; then
+            echo ""
+            echo "❌ ERROR: wasm-bindgen-futures version mismatch!"
+            echo "   Expected: ${{ steps.pin_wasm_bindgen.outputs.wasm_bindgen_futures_version }}"
+            echo "   Found: $wasm_bindgen_futures_version"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ All wasm-bindgen versions verified successfully"
+          
+          # Export for reporting
           echo "wasm_bindgen_version=$wasm_bindgen_version" >> $GITHUB_OUTPUT
           echo "wasm_bindgen_futures_version=$wasm_bindgen_futures_version" >> $GITHUB_OUTPUT
+          
+          # Store package list for report
+          printf '%s\n' "${package_list[@]}" > wasm-bindgen-packages.txt
 
       - name: Test build with new lockfile
         run: |
@@ -118,7 +192,7 @@ jobs:
           echo "📊 Generating dependency report..."
           
           # Count total dependencies
-          total_deps=$(grep -c 'name = "' Cargo.lock || echo "0")
+          total_deps=$(grep -c '^name = "' Cargo.lock || echo "0")
           
           # Create report
           cat > dependency-report.md << EOF
@@ -130,15 +204,27 @@ jobs:
           
           ## Summary
           - Total dependencies: $total_deps
-          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
-          - wasm-bindgen-futures: ${{ steps.verify.outputs.wasm_bindgen_futures_version }}
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }} ✅ (pinned to 0.2.106)
+          - wasm-bindgen-futures: ${{ steps.verify.outputs.wasm_bindgen_futures_version }} ✅ (pinned to 0.4.56)
+          
+          ## wasm-bindgen Ecosystem
+          All wasm-bindgen related packages:
+          \`\`\`
+          EOF
+          
+          if [ -f wasm-bindgen-packages.txt ]; then
+            cat wasm-bindgen-packages.txt | sed 's/:/: /' >> dependency-report.md
+          fi
+          
+          cat >> dependency-report.md << EOF
+          \`\`\`
           
           ## Changes
           EOF
           
           if [ "${{ steps.backup.outputs.backup_exists }}" = "true" ]; then
-            echo "\`\`\`" >> dependency-report.md
-            diff -u Cargo.lock.backup Cargo.lock | head -50 >> dependency-report.md || echo "No differences found" >> dependency-report.md
+            echo "\`\`\`diff" >> dependency-report.md
+            diff -u Cargo.lock.backup Cargo.lock | head -100 >> dependency-report.md || echo "No differences found" >> dependency-report.md
             echo "\`\`\`" >> dependency-report.md
           else
             echo "- Fresh Cargo.lock generated (no previous version)" >> dependency-report.md
@@ -172,16 +258,18 @@ jobs:
           git add Cargo.lock
           
           if [ "${{ inputs.force_update }}" = "true" ]; then
-            commit_msg="chore(deps): force update Cargo.lock with latest compatible versions
+            commit_msg="chore(deps): force update Cargo.lock with wasm-bindgen pinned to 0.2.106
           
           - Total dependencies: ${{ steps.report.outputs.total_deps }}
-          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }} (pinned)
+          - wasm-bindgen-futures: ${{ steps.verify.outputs.wasm_bindgen_futures_version }} (pinned)
           - Updated via code-locked workflow (force update)"
           else
-            commit_msg="chore(deps): regenerate Cargo.lock with fresh dependency resolution
+            commit_msg="chore(deps): regenerate Cargo.lock with wasm-bindgen pinned to 0.2.106
           
           - Total dependencies: ${{ steps.report.outputs.total_deps }}
-          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }}
+          - wasm-bindgen: ${{ steps.verify.outputs.wasm_bindgen_version }} (pinned)
+          - wasm-bindgen-futures: ${{ steps.verify.outputs.wasm_bindgen_futures_version }} (pinned)
           - Updated via code-locked workflow"
           fi
           
@@ -209,3 +297,8 @@ jobs:
           else
             echo "ℹ️ No changes needed - Cargo.lock is up to date" >> $GITHUB_STEP_SUMMARY
           fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Version Pinning Status" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen is pinned to **0.2.106** ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- wasm-bindgen-futures is pinned to **0.4.56** ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- All versions verified and consistent" >> $GITHUB_STEP_SUMMARY
