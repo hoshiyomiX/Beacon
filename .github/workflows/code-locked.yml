@@ -1,18 +1,21 @@
 # Code Locked Workflow
 # Automated Cargo.lock regeneration and dependency management
 # Ensures consistent builds and handles wasm-bindgen version compatibility
+# Can be run manually via GitHub Actions UI
 
 name: code locked
 
 on:
+  # Manual trigger - run anytime via GitHub Actions UI
   workflow_dispatch:
     inputs:
       force_update:
-        description: 'Force update all dependencies to latest compatible versions'
+        description: 'Force update all dependencies to latest compatible versions (keeps wasm-bindgen pinned)'
         required: false
         type: boolean
         default: false
 
+  # Automatic triggers
   schedule:
     # Run weekly on Monday at 00:00 UTC to keep dependencies fresh
     - cron: '0 0 * * 1'
@@ -104,6 +107,7 @@ jobs:
         id: generate
         run: |
           echo "🔨 Generating fresh Cargo.lock with pinned wasm-bindgen versions..."
+          echo "🎯 Trigger: ${{ github.event_name }}"
           
           if [ "${{ inputs.force_update }}" = "true" ]; then
             echo "⚡ Force updating all dependencies except wasm-bindgen ecosystem"
@@ -194,13 +198,23 @@ jobs:
           # Count total dependencies
           total_deps=$(grep -c '^name = "' Cargo.lock || echo "0")
           
+          # Determine trigger type
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            trigger_desc="Manual workflow dispatch"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            trigger_desc="Scheduled (weekly)"
+          else
+            trigger_desc="Push to ${{ github.ref_name }}"
+          fi
+          
           # Create report
           cat > dependency-report.md << EOF
           # Cargo.lock Regeneration Report
           
           **Generated:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           **Branch:** ${{ github.ref_name }}
-          **Trigger:** ${{ github.event_name }}
+          **Trigger:** $trigger_desc
+          **Force Update:** ${{ inputs.force_update || 'false' }}
           
           ## Summary
           - Total dependencies: $total_deps
