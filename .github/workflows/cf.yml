@@ -24,9 +24,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install wasm-bindgen-cli 0.2.105
+      - name: Install wasm-bindgen-cli 0.2.106
         run: |
-          cargo install -f wasm-bindgen-cli --version 0.2.105
+          cargo install -f wasm-bindgen-cli --version 0.2.106
           wasm-bindgen --version
 
       - name: Install worker-build
@@ -34,7 +34,7 @@ jobs:
 
       - name: Build WASM
         run: |
-          echo "Building with wasm-bindgen 0.2.105 (pinned in Cargo.toml)"
+          echo "Building with wasm-bindgen 0.2.106 (pinned in Cargo.toml)"
           worker-build --release
 
       - name: Inspect workspace structure
