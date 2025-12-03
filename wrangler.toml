@@ -1,4 +1,4 @@
-name = "beacon"
+name = "beacon-testing"
 main = "build/worker/shim.mjs"
 compatibility_date = "2024-11-30"
 minify = true
