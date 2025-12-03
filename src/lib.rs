@@ -136,42 +136,68 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
-        server.accept()?;
-
-        // WASM-compatible spawn: Use spawn_local instead of tokio::spawn
-        // tokio::spawn requires multi-threaded runtime not available in Cloudflare Workers
+        
+        // Spawn WebSocket processing task BEFORE accepting to avoid race condition
+        // This ensures the response is returned immediately while processing happens async
         wasm_bindgen_futures::spawn_local(async move {
-            // Get events with benign error handling
-            let events = match server.events() {
-                Ok(ev) => ev,
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    // Only log non-benign errors
-                    if !is_benign_error(&error_msg) {
-                        console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
+            use gloo_timers::future::TimeoutFuture;
+            
+            // Accept connection inside spawned task to avoid blocking response
+            if let Err(e) = server.accept() {
+                console_log!("[ERROR] Failed to accept WebSocket: {}", e);
+                let _ = server.close(Some(1011), Some("Failed to accept connection".to_string()));
+                return;
+            }
+            
+            // Wrap processing in timeout to prevent unresolved promises
+            let process_future = async {
+                let events = match server.events() {
+                    Ok(ev) => ev,
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if !is_benign_error(&error_msg) {
+                            console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
+                        }
+                        let _ = server.close(Some(1011), Some("Failed to get events".to_string()));
+                        return;
                     }
-                    // Exit gracefully for benign errors - no panic, no CF error log
-                    return;
+                };
+
+                match ProxyStream::new(cx.data, &server, events).process().await {
+                    Ok(_) => {
+                        console_log!("[INFO] Proxy stream completed successfully");
+                        // Explicit close on success with normal closure code
+                        let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                    },
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if !is_benign_error(&error_msg) {
+                            console_log!("[ERROR] Proxy processing failed: {}", error_msg);
+                        }
+                        // Explicit close on error with internal error code
+                        let _ = server.close(Some(1011), Some("Internal error".to_string()));
+                    }
                 }
             };
 
-            // Process proxy stream with full benign error suppression
-            match ProxyStream::new(cx.data, &server, events).process().await {
-                Ok(_) => {
-                    // Normal completion - connection closed gracefully
+            // 30-second timeout to prevent hanging Workers
+            let timeout = TimeoutFuture::new(30_000);
+            futures_util::pin_mut!(process_future);
+            
+            match futures_util::future::select(process_future, timeout).await {
+                futures_util::future::Either::Left(_) => {
+                    // Completed within timeout - close handler already called in process_future
+                    console_log!("[INFO] WebSocket processing completed within timeout");
                 },
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    // Only log fatal errors - benign errors are silently dropped
-                    if !is_benign_error(&error_msg) {
-                        console_log!("[FATAL] Proxy processing error: {}", error_msg);
-                    }
-                    // Benign errors don't bubble up - they end here
+                futures_util::future::Either::Right(_) => {
+                    // Timeout occurred - close WebSocket gracefully with timeout code
+                    console_log!("[TIMEOUT] WebSocket processing exceeded 30s, closing connection");
+                    let _ = server.close(Some(1008), Some("Processing timeout".to_string()));
                 }
             }
-            // No error propagation = no CF error logs for benign cases
         });
 
+        // Return WebSocket response immediately - processing happens in spawned task
         Response::from_websocket(client)
     } else {
         Response::from_html("hi from wasm!")

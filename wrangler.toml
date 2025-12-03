@@ -32,13 +32,8 @@ CONVERTER_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/h
 CHECKER_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/checker.html"
 
 [observability]
+enabled = true
+
 [observability.logs]
 enabled = true
-head_sampling_rate = 1
-invocation_logs = true
-persist = true
-
-[observability.traces]
-enabled = true
-head_sampling_rate = 1
-persist = true
+invocation_logs = false

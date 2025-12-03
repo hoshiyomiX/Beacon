@@ -49,23 +49,42 @@ impl <'a> ProxyStream<'a> {
 
             // send header
             self.write(&[0u8; 2]).await?;
+            
+            // Try each address in pool, break on first success
+            let mut last_error = None;
             for (target_addr, target_port) in addr_pool {
-                if let Err(e) = self.handle_tcp_outbound(target_addr, target_port).await {
-                    let error_msg = e.to_string();
-                    if !is_benign_error(&error_msg) && !error_msg.contains("HTTP service detected") {
-                        console_error!("[FATAL] TCP error: {}", error_msg);
+                match self.handle_tcp_outbound(target_addr.clone(), target_port).await {
+                    Ok(_) => {
+                        console_log!("[SUCCESS] VLESS TCP connection successful to {}:{}", target_addr, target_port);
+                        return Ok(()); // Break on first successful connection
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if !is_benign_error(&error_msg) && !error_msg.contains("HTTP service detected") {
+                            console_log!("[WARN] VLESS TCP failed for {}:{} - {}, trying next...", target_addr, target_port, error_msg);
+                        }
+                        last_error = Some(e);
+                        // Continue to next address in pool
                     }
                 }
             }
+            
+            // All addresses failed, return the last error
+            if let Some(err) = last_error {
+                Err(err)
+            } else {
+                Err(Error::RustError("All VLESS TCP connections failed".to_string()))
+            }
         } else {
+            // UDP handling
             if let Err(e) = self.handle_udp_outbound().await {
                 let error_msg = e.to_string();
                 if !is_benign_error(&error_msg) {
-                    console_error!("[FATAL] UDP error: {}", error_msg);
+                    console_error!("[FATAL] VLESS UDP error: {}", error_msg);
                 }
+                return Err(e);
             }
+            Ok(())
         }
-
-        Ok(())
     }
 }

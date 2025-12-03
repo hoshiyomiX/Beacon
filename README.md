@@ -1,76 +1,51 @@
-# Siren
+# Beacon Project - Rust Cloudflare Worker
 
-**A Serverless V2Ray Tunnel Optimized for Indonesia**
+Beacon is a Rust-based Cloudflare Workers application for secure, encrypted data processing.
 
-Siren is a lightweight and serverless V2Ray tunnel built on [Cloudflare Workers](https://workers.cloudflare.com/), supporting modern proxy protocols.  
-It offers fast, secure, and scalable deployment without the need for a traditional VPS.
+## Project Structure
+- **src/**: Core Rust logic
+- **web/**: Frontend assets
+- **scripts/**: Build and deployment scripts
 
----
+## Build & Deploy
 
-## 🔧 Features
+```bash
+# Build for Cloudflare Workers
+make build
 
-- ✅ **Multi-Protocol Support**
+# Deploy to testing environment
+make deploy
 
-  - VMess
-  - Trojan
-  - VLESS
-  - Shadowsocks
+# View production deployment
+make deploy-prod
+```
 
-- ✅ **Domain over HTTPS (DoH)**  
-  Encrypts DNS queries for improved privacy and security.
+## Dependencies
 
----
+The project uses:
+- **Rust 1.70+** with wasm32-unknown-unknown target
+- **wasm-bindgen** for WebAssembly bindings
+- **worker** framework for Cloudflare Workers
+- **reqwest** for HTTP requests (WASM-compatible)
 
-## 🌐 Endpoints
+## Security Features
 
-| Endpoint | Description                       |
-| -------- | --------------------------------- |
-| `/`      | Main landing page                 |
-| `/link`  | Generate shareable proxy links    |
-| `/sub`   | Subscription endpoint for clients |
+- **AES-GCM encryption** for data protection
+- **SHA-256 hashing** for integrity verification
+- **UUID generation** for unique identifiers
+- **Base64 encoding** for secure data transmission
 
----
+## Development
 
-## 🚀 Deployment Guide
+Run locally with:
 
-Siren can be deployed seamlessly using GitHub Actions with Cloudflare Workers.
+```bash
+# Install dependencies
+cargo install worker-build
 
-### ⚙️ CI/CD via GitHub Actions
+# Build and test
+cargo build --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/beacon.wasm --out-dir target/wasm-bindgen --target web
+```
 
-1. **Create a KV Namespace**
-
-   - Go to Cloudflare Dashboard → Workers → KV.
-   - Create a new namespace named `SIREN`.
-
-2. **Configure `wrangler.toml`**
-
-   - Add the KV namespace to your config file:
-     ```toml
-     [[kv_namespaces]]
-     binding = "SIREN"
-     id = "YOUR_KV_NAMESPACE_ID"
-     ```
-
-3. **Generate API Token**
-
-   - [Create an API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with:
-     - Permissions: Workers & KV Storage
-
-4. **Set GitHub Repository Secret**
-
-   - Navigate to: GitHub → Your Repo → Settings → Secrets and variables → Actions
-   - Add a new secret:
-     - Name: `CLOUDFLARE_API_TOKEN`
-     - Value: Your API token
-
-5. **Enable GitHub Actions**
-
-   - Open the **Actions** tab on GitHub.
-   - Enable workflows if prompted.
-
-6. **Trigger Deployment**
-
-   - Push any commit or manually trigger the deployment workflow.
-
-7. **Access Your Siren Instance**
-   - Visit: `https://<YOUR-WORKERS-SUBDOMAIN>.workers.dev`
+See the [Cloudflare Workers documentation](https://developers.cloudflare.com/workers/) for more details.
