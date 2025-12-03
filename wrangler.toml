@@ -1,4 +1,4 @@
-name = "beacon-testing"
+name = "beacon"
 main = "build/worker/shim.mjs"
 compatibility_date = "2024-11-30"
 minify = true
@@ -22,7 +22,9 @@ binding = "library"
 id = "a9f61fcc3abf48af91a5924027ee1a1a"
 
 [vars]
+
 UUID = "38425afe-8466-4876-8223-f3d604ca3c18"
+
 MAIN_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/index.html"
 SUB_PAGE_URL  = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/sub.html"
 LINK_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/link.html"
