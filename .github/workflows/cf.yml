@@ -51,34 +51,44 @@ jobs:
           fi
           echo ""
           echo "Searching for WASM artifacts in entire workspace:"
-          find . -name "*.wasm" -o -name "index.js" | head -20
+          find . -name "*.wasm" -o -name "*.mjs" -o -name "shim.mjs" | head -20
 
       - name: Verify build artifacts
         run: |
           echo "=== Build Artifact Validation ==="
           
-          # Check if build directory exists
-          if [ ! -d "build" ]; then
-            echo "❌ Error: build/ directory not found"
+          # Check if build/worker directory exists (worker-build output location)
+          if [ ! -d "build/worker" ]; then
+            echo "❌ Error: build/worker/ directory not found"
+            echo "worker-build may have failed or output to unexpected location"
+            exit 1
+          fi
+          echo "✅ build/worker/ directory found"
+          
+          # Check for shim.mjs (main entry point)
+          if [ ! -f "build/worker/shim.mjs" ]; then
+            echo "❌ Error: build/worker/shim.mjs not found"
+            exit 1
+          fi
+          SHIM_SIZE=$(stat -c%s "build/worker/shim.mjs" 2>/dev/null || stat -f%z "build/worker/shim.mjs")
+          echo "✅ shim.mjs found (${SHIM_SIZE} bytes)"
+          
+          # Check for WASM file (worker-build generates index_bg.wasm)
+          WASM_FILE=""
+          if [ -f "build/worker/index_bg.wasm" ]; then
+            WASM_FILE="build/worker/index_bg.wasm"
+          elif [ -f "build/index.wasm" ]; then
+            WASM_FILE="build/index.wasm"
+          else
+            echo "❌ Error: WASM file not found in expected locations"
+            echo "Checked: build/worker/index_bg.wasm, build/index.wasm"
+            ls -la build/worker/ || true
             exit 1
           fi
           
-          # Check for index.js
-          if [ ! -f "build/index.js" ]; then
-            echo "❌ Error: build/index.js not found"
-            exit 1
-          fi
-          JS_SIZE=$(stat -f%z "build/index.js" 2>/dev/null || stat -c%s "build/index.js")
-          echo "✅ index.js found (${JS_SIZE} bytes)"
-          
-          # Check for index.wasm
-          if [ ! -f "build/index.wasm" ]; then
-            echo "❌ Error: build/index.wasm not found"
-            exit 1
-          fi
-          WASM_SIZE=$(stat -f%z "build/index.wasm" 2>/dev/null || stat -c%s "build/index.wasm")
+          WASM_SIZE=$(stat -c%s "$WASM_FILE" 2>/dev/null || stat -f%z "$WASM_FILE")
           WASM_SIZE_MB=$(echo "scale=2; $WASM_SIZE / 1024 / 1024" | bc)
-          echo "✅ index.wasm found (${WASM_SIZE} bytes / ${WASM_SIZE_MB} MB)"
+          echo "✅ WASM file found at $WASM_FILE (${WASM_SIZE} bytes / ${WASM_SIZE_MB} MB)"
           
           # Validate WASM file is not empty
           if [ "$WASM_SIZE" -lt 1000 ]; then
@@ -90,16 +100,21 @@ jobs:
             echo "❌ Error: WASM file exceeds 10MB Cloudflare Workers limit"
             exit 1
           elif [ "$WASM_SIZE" -gt 1048576 ]; then
-            echo "⚠️  Warning: WASM file exceeds 1MB (free tier limit)"
+            echo "⚠️  Warning: WASM file exceeds 1MB (free tier limit, but OK for paid tier)"
           fi
           
           # Validate WASM magic number
-          MAGIC=$(xxd -l 4 -p build/index.wasm)
+          MAGIC=$(xxd -l 4 -p "$WASM_FILE")
           if [ "$MAGIC" != "0061736d" ]; then
             echo "❌ Error: Invalid WASM file (magic number: $MAGIC, expected: 0061736d)"
             exit 1
           fi
           echo "✅ WASM magic number validated"
+          
+          # List all files in build/worker for verification
+          echo ""
+          echo "=== Contents of build/worker/ ==="
+          ls -lh build/worker/
           
           echo ""
           echo "=== All build artifacts validated successfully ==="
