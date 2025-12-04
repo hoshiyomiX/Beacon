@@ -180,8 +180,8 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                 }
             };
 
-            // 30-second timeout to prevent hanging Workers
-            let timeout = TimeoutFuture::new(30_000);
+            // 8-second timeout for free tier compliance (10ms CPU limit)
+            let timeout = TimeoutFuture::new(8_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {
@@ -191,7 +191,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                 },
                 futures_util::future::Either::Right(_) => {
                     // Timeout occurred - close WebSocket gracefully with timeout code
-                    console_log!("[TIMEOUT] WebSocket processing exceeded 30s, closing connection");
+                    console_log!("[TIMEOUT] WebSocket processing exceeded 8s, closing connection");
                     let _ = server.close(Some(1008), Some("Processing timeout".to_string()));
                 }
             }
