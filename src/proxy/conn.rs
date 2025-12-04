@@ -25,7 +25,7 @@ pin_project! {
 
 /// Check if an error is benign (expected during normal operation)
 /// Benign errors should be silently handled without propagating to Cloudflare logs
-fn is_benign_error(error_msg: &str) -> bool {
+pub fn is_benign_error(error_msg: &str) -> bool {
     let error_lower = error_msg.to_lowercase();
     
     // Connection lifecycle errors (normal client/network behavior)
@@ -68,6 +68,8 @@ fn is_benign_error(error_msg: &str) -> bool {
         // Protocol-level expected conditions
         || error_lower.contains("protocol not implemented")
         || error_lower.contains("handshake")
+        || error_lower.contains("connection failed")
+        || error_lower.contains("all") && error_lower.contains("failed")
 }
 
 /// Determine if an error should be logged as WARNING (transient/expected issues)
@@ -275,7 +277,8 @@ impl<'a> ProxyStream<'a> {
             return Ok(());
         }
 
-        if self.is_vless(peeked_buffer) {
+        // Process protocol and wrap result to suppress benign errors from Cloudflare logs
+        let result = if self.is_vless(peeked_buffer) {
             console_log!("vless detected!");
             self.process_vless().await
         } else if self.is_shadowsocks(peeked_buffer) {
@@ -289,7 +292,23 @@ impl<'a> ProxyStream<'a> {
             self.process_vmess().await
         } else {
             // Unknown protocol is benign - could be probe/scanner
-            Ok(())
+            return Ok(());
+        };
+
+        // Top-level error suppression: silence benign errors before Cloudflare logging
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let error_msg = e.to_string();
+                if is_benign_error(&error_msg) {
+                    // Silent success - don't propagate to Cloudflare logs
+                    Ok(())
+                } else {
+                    // Only true bugs/unexpected errors propagate
+                    console_log!("[FATAL] Unexpected error: {}", error_msg);
+                    Err(e)
+                }
+            }
         }
     }
 
@@ -365,23 +384,22 @@ impl<'a> ProxyStream<'a> {
             futures_util::future::Either::Left((Err(e), _)) => {
                 let error_msg = e.to_string();
                 
-                // All connection errors are benign - they indicate client/network issues, not code bugs
+                // Log for debugging but propagate error for proper failover logic
                 if error_msg.to_lowercase().contains("http") {
                     console_log!(
-                        "[DEBUG] HTTP service detected at {}:{} - client misconfiguration",
+                        "[DEBUG] HTTP service detected at {}:{}",
                         &addr, port
                     );
                 } else {
-                    console_log!("[DEBUG] Connection failed to {}:{} (benign: {})", &addr, port, error_msg);
+                    console_log!("[DEBUG] Connection failed to {}:{}", &addr, port);
                 }
                 
-                // Silent return - don't propagate error to Cloudflare logs
-                return Ok(());
+                // Return error to enable protocol failover logic
+                return Err(Error::RustError(format!("Connection failed to {}:{}", &addr, port)));
             },
             futures_util::future::Either::Right(_) => {
-                // Timeout is benign - target is slow/unreachable
-                console_log!("[DEBUG] Connection timeout to {}:{} (benign)", &addr, port);
-                return Ok(());
+                console_log!("[DEBUG] Connection timeout to {}:{}", &addr, port);
+                return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
@@ -408,9 +426,9 @@ impl<'a> ProxyStream<'a> {
                     return Ok(());
                 }
                 
-                // Only truly unexpected errors should propagate (e.g., memory corruption, logic bugs)
-                console_log!("[FATAL] Unexpected transfer error for {}:{} - {}", &addr, port, error_msg);
-                Err(Error::RustError(format!("Unexpected error for {}:{}: {}", &addr, port, error_msg)))
+                // Propagate unexpected errors
+                console_log!("[ERROR] Transfer error for {}:{} - {}", &addr, port, error_msg);
+                Err(Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg)))
             }
         }
     }
