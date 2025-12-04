@@ -1,6 +1,7 @@
 use uuid::Uuid;
 
 #[derive(Clone)]
+#[allow(dead_code)] // host field is used but dead code analyzer gets confused by Clone + async spawn
 pub struct Config {
     pub uuid: Uuid,
     pub host: String,
