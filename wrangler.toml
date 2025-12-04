@@ -31,6 +31,11 @@ LINK_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/
 CONVERTER_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/converter.html"
 CHECKER_PAGE_URL = "https://raw.githubusercontent.com/hoshiyomiX/Beacon/refs/heads/master/web/checker.html"
 
+# Bundled proxy list - edit this to update proxies (requires redeployment)
+# Format: {"COUNTRY_CODE": ["ip:port", "ip:port"], ...}
+# Example country codes: US (United States), SG (Singapore), JP (Japan), etc.
+PROXY_LIST = '{"US":["1.2.3.4:443","5.6.7.8:443"],"SG":["10.0.0.1:443","10.0.0.2:443"],"JP":["192.168.1.1:443"]}'
+
 [observability]
 enabled = true
 
