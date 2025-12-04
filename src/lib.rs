@@ -27,8 +27,11 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("connection aborted")
         || error_lower.contains("transfer error")
         || error_lower.contains("canceled")
+        || error_lower.contains("cancelled")
         || error_lower.contains("benign")
         || error_lower.contains("not enough buffer")
+        || error_lower.contains("websocket")
+        || error_lower.contains("handshake")
 }
 
 #[event(fetch)]
@@ -94,6 +97,27 @@ async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
 }
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
+    // Wrap entire function to catch WebSocket handshake errors
+    let result = tunnel_inner(req, &mut cx).await;
+    
+    // Suppress benign errors before they reach Cloudflare logs
+    match result {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            let error_msg = e.to_string();
+            if is_benign_error(&error_msg) {
+                // Return a simple response instead of propagating error
+                Response::ok("Connection closed")
+            } else {
+                // Only unexpected errors propagate
+                console_error!("[FATAL] Unexpected tunnel error: {}", error_msg);
+                Err(e)
+            }
+        }
+    }
+}
+
+async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Response> {
     let mut proxyip = cx.param("proxyip").unwrap().to_string();
     
     // Handle proxy selection from bundled list
@@ -146,6 +170,9 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         
+        // Clone config for the spawned task
+        let config = cx.data.clone();
+        
         // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
@@ -164,7 +191,7 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
 
             // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
             let process_future = async {
-                let _ = ProxyStream::new(cx.data, &server, events).process().await;
+                let _ = ProxyStream::new(config, &server, events).process().await;
             };
 
             let timeout = TimeoutFuture::new(8_000);
