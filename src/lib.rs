@@ -30,6 +30,7 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("transfer error")
         || error_lower.contains("canceled")
         || error_lower.contains("benign")
+        || error_lower.contains("not enough buffer")
 }
 
 #[event(fetch)]
@@ -104,16 +105,12 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         // Get bundled proxy list from environment variables
         let proxy_list_json = cx.env.var("PROXY_LIST")
             .map(|x| x.to_string())
-            .unwrap_or_else(|_| {
-                console_log!("[WARN] PROXY_LIST not found in environment, using empty list");
-                "{}".to_string()
-            });
+            .unwrap_or_else(|_| "{}".to_string());
         
         // Parse proxy list (no KV or external fetch needed!)
         let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
             Ok(map) => map,
             Err(e) => {
-                console_log!("[ERROR] Failed to parse PROXY_LIST: {}", e);
                 return Err(Error::from(format!("Invalid PROXY_LIST configuration: {}", e)));
             }
         };
@@ -130,13 +127,10 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             if !proxy_list.is_empty() {
                 let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
                 proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
-                console_log!("[INFO] Selected proxy: {} from country code {}", &proxyip, &kvid_list[kv_index]);
             } else {
-                console_log!("[WARN] Empty proxy list for country code: {}", &proxyip);
                 return Err(Error::from(format!("No proxies available for country: {}", &proxyip)));
             }
         } else {
-            console_log!("[WARN] Country code not found in PROXY_LIST: {}", &proxyip);
             return Err(Error::from(format!("Country code not found: {}", &proxyip)));
         }
     }
@@ -154,73 +148,71 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         
-        // Spawn WebSocket processing task BEFORE accepting to avoid race condition
-        // This ensures the response is returned immediately while processing happens async
+        // Spawn WebSocket processing in fire-and-forget mode with full error suppression
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
             
-            // Accept connection inside spawned task to avoid blocking response
-            if let Err(e) = server.accept() {
-                let error_msg = e.to_string();
-                if !is_benign_error(&error_msg) {
-                    console_log!("[ERROR] Failed to accept WebSocket: {}", error_msg);
-                } else {
-                    console_log!("[DEBUG] Benign WebSocket accept error: {}", error_msg);
-                }
-                let _ = server.close(Some(1011), Some("Failed to accept connection".to_string()));
-                return;
-            }
-            
-            // Wrap processing in timeout to prevent unresolved promises
-            let process_future = async {
-                let events = match server.events() {
-                    Ok(ev) => ev,
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        if !is_benign_error(&error_msg) {
-                            console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
-                        } else {
-                            console_log!("[DEBUG] Benign WebSocket events error: {}", error_msg);
-                        }
-                        let _ = server.close(Some(1011), Some("Failed to get events".to_string()));
-                        return;
+            // Wrap entire task in Result to catch ALL errors before they bubble to Cloudflare
+            let task_result: Result<(), Box<dyn std::error::Error>> = async {
+                // Accept connection
+                server.accept().map_err(|e| {
+                    let msg = e.to_string();
+                    if !is_benign_error(&msg) {
+                        // Only log non-benign errors
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
+                    } else {
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
                     }
+                })?;
+                
+                // Get event stream
+                let events = server.events().map_err(|e| {
+                    let msg = e.to_string();
+                    if !is_benign_error(&msg) {
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
+                    } else {
+                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
+                    }
+                })?;
+
+                // Process proxy stream with timeout
+                let process_future = async {
+                    ProxyStream::new(cx.data, &server, events).process().await.map_err(|e| {
+                        let msg = e.to_string();
+                        if !is_benign_error(&msg) {
+                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
+                        } else {
+                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
+                        }
+                    })
                 };
 
-                match ProxyStream::new(cx.data, &server, events).process().await {
-                    Ok(_) => {
-                        console_log!("[INFO] Proxy stream completed successfully");
-                        // Explicit close on success with normal closure code
-                        let _ = server.close(Some(1000), Some("Normal closure".to_string()));
-                    },
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        if !is_benign_error(&error_msg) {
-                            console_log!("[ERROR] Proxy processing failed: {}", error_msg);
-                        } else {
-                            console_log!("[DEBUG] Benign proxy processing error: {}", error_msg);
-                        }
-                        // Explicit close on error with internal error code
-                        let _ = server.close(Some(1011), Some("Internal error".to_string()));
+                let timeout = TimeoutFuture::new(8_000);
+                futures_util::pin_mut!(process_future);
+                
+                match futures_util::future::select(process_future, timeout).await {
+                    futures_util::future::Either::Left((result, _)) => result?,
+                    futures_util::future::Either::Right(_) => {
+                        // Timeout is expected, treat as benign
+                        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")));
                     }
                 }
-            };
 
-            // 8-second timeout for free tier compliance (10ms CPU limit)
-            let timeout = TimeoutFuture::new(8_000);
-            futures_util::pin_mut!(process_future);
-            
-            match futures_util::future::select(process_future, timeout).await {
-                futures_util::future::Either::Left(_) => {
-                    // Completed within timeout - close handler already called in process_future
-                    console_log!("[INFO] WebSocket processing completed within timeout");
+                Ok(())
+            }.await;
+
+            // Close WebSocket based on result
+            let _ = match task_result {
+                Ok(_) => server.close(Some(1000), Some("Normal closure".to_string())),
+                Err(e) if e.to_string().contains("benign") => {
+                    // Benign error - close normally without logging
+                    server.close(Some(1000), Some("Connection closed".to_string()))
                 },
-                futures_util::future::Either::Right(_) => {
-                    // Timeout occurred - close WebSocket gracefully with timeout code
-                    console_log!("[TIMEOUT] WebSocket processing exceeded 8s, closing connection");
-                    let _ = server.close(Some(1008), Some("Processing timeout".to_string()));
+                Err(_) => {
+                    // Only non-benign errors reach here, already logged above
+                    server.close(Some(1011), Some("Internal error".to_string()))
                 }
-            }
+            };
         });
 
         // Return WebSocket response immediately - processing happens in spawned task
