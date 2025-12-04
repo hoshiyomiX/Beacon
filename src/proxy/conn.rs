@@ -358,17 +358,12 @@ impl<'a> ProxyStream<'a> {
         buffer.len() > 0 // fallback
     }
 
-    /// Check if the target port is commonly used for HTTP services
-    fn is_http_port(port: u16) -> bool {
-        port == 80 || port == 443 || port == 8080 || port == 8443
-    }
-
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
         // Connect with 8s timeout for free tier compliance
         let connect_future = async {
-            let mut remote_socket = Socket::builder().connect(&addr, port)?;
+            let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
