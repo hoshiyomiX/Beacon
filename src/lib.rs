@@ -96,32 +96,49 @@ async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
     let mut proxyip = cx.param("proxyip").unwrap().to_string();
-    if PROXYKV_PATTERN.is_match(&proxyip)  {
+    
+    // Handle proxy selection from bundled list
+    if PROXYKV_PATTERN.is_match(&proxyip) {
         let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
-        let kv = cx.kv("library")?;
-        let mut proxy_kv_str = kv.get("proxy_kv").text().await?.unwrap_or("".to_string());
+        
+        // Get bundled proxy list from environment variables
+        let proxy_list_json = cx.env.var("PROXY_LIST")
+            .map(|x| x.to_string())
+            .unwrap_or_else(|_| {
+                console_log!("[WARN] PROXY_LIST not found in environment, using empty list");
+                "{}".to_string()
+            });
+        
+        // Parse proxy list (no KV or external fetch needed!)
+        let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
+            Ok(map) => map,
+            Err(e) => {
+                console_log!("[ERROR] Failed to parse PROXY_LIST: {}", e);
+                return Err(Error::from(format!("Invalid PROXY_LIST configuration: {}", e)));
+            }
+        };
+        
+        // Random selection logic
         let mut rand_buf = [0u8, 1];
         getrandom::getrandom(&mut rand_buf).expect("failed generating random number");
-
-        if proxy_kv_str.len() == 0 {
-            console_log!("getting proxy kv from github...");
-            let req = Fetch::Url(Url::parse("https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json")?);
-            let mut res = req.send().await?;
-            if res.status_code() == 200 {
-                proxy_kv_str = res.text().await?.to_string();
-                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?; // 24 hours
-            } else {
-                return Err(Error::from(format!("error getting proxy kv: {}", res.status_code())));
-            }
-        }
-
-        let proxy_kv: HashMap<String, Vec<String>> = serde_json::from_str(&proxy_kv_str)?;
-
+        
         let kv_index = (rand_buf[0] as usize) % kvid_list.len();
         proxyip = kvid_list[kv_index].clone();
-
-        let proxyip_index = (rand_buf[0] as usize) % proxy_kv[&proxyip].len();
-        proxyip = proxy_kv[&proxyip][proxyip_index].clone().replace(":", "-");
+        
+        // Select random proxy from the country list
+        if let Some(proxy_list) = proxy_kv.get(&proxyip) {
+            if !proxy_list.is_empty() {
+                let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
+                proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
+                console_log!("[INFO] Selected proxy: {} from country code {}", &proxyip, &kvid_list[kv_index]);
+            } else {
+                console_log!("[WARN] Empty proxy list for country code: {}", &proxyip);
+                return Err(Error::from(format!("No proxies available for country: {}", &proxyip)));
+            }
+        } else {
+            console_log!("[WARN] Country code not found in PROXY_LIST: {}", &proxyip);
+            return Err(Error::from(format!("Country code not found: {}", &proxyip)));
+        }
     }
 
     if PROXYIP_PATTERN.is_match(&proxyip) {
