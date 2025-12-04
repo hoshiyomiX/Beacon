@@ -6,8 +6,6 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-use serde_json::json;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
@@ -148,71 +146,38 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         
-        // Spawn WebSocket processing in fire-and-forget mode with full error suppression
+        // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
-            
-            // Wrap entire task in Result to catch ALL errors before they bubble to Cloudflare
-            let task_result: Result<(), Box<dyn std::error::Error>> = async {
-                // Accept connection
-                server.accept().map_err(|e| {
-                    let msg = e.to_string();
-                    if !is_benign_error(&msg) {
-                        // Only log non-benign errors
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
-                    } else {
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
-                    }
-                })?;
-                
-                // Get event stream
-                let events = server.events().map_err(|e| {
-                    let msg = e.to_string();
-                    if !is_benign_error(&msg) {
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
-                    } else {
-                        Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
-                    }
-                })?;
 
-                // Process proxy stream with timeout
-                let process_future = async {
-                    ProxyStream::new(cx.data, &server, events).process().await.map_err(|e| {
-                        let msg = e.to_string();
-                        if !is_benign_error(&msg) {
-                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, msg)) as Box<dyn std::error::Error>
-                        } else {
-                            Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")) as Box<dyn std::error::Error>
-                        }
-                    })
-                };
+            // Accept connection; ignore errors (Cloudflare will close the socket)
+            let _ = server.accept();
 
-                let timeout = TimeoutFuture::new(8_000);
-                futures_util::pin_mut!(process_future);
-                
-                match futures_util::future::select(process_future, timeout).await {
-                    futures_util::future::Either::Left((result, _)) => result?,
-                    futures_util::future::Either::Right(_) => {
-                        // Timeout is expected, treat as benign
-                        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "benign")));
-                    }
-                }
-
-                Ok(())
-            }.await;
-
-            // Close WebSocket based on result
-            let _ = match task_result {
-                Ok(_) => server.close(Some(1000), Some("Normal closure".to_string())),
-                Err(e) if e.to_string().contains("benign") => {
-                    // Benign error - close normally without logging
-                    server.close(Some(1000), Some("Connection closed".to_string()))
-                },
+            // Get events; if this fails, nothing to do
+            let events = match server.events() {
+                Ok(ev) => ev,
                 Err(_) => {
-                    // Only non-benign errors reach here, already logged above
-                    server.close(Some(1011), Some("Internal error".to_string()))
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                    return;
                 }
             };
+
+            // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
+            let process_future = async {
+                let _ = ProxyStream::new(cx.data, &server, events).process().await;
+            };
+
+            let timeout = TimeoutFuture::new(8_000);
+            futures_util::pin_mut!(process_future);
+            
+            match futures_util::future::select(process_future, timeout).await {
+                futures_util::future::Either::Left(_) => {
+                    let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                },
+                futures_util::future::Either::Right(_) => {
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                }
+            }
         });
 
         // Return WebSocket response immediately - processing happens in spawned task
