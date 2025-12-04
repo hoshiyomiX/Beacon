@@ -32,6 +32,8 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("not enough buffer")
         || error_lower.contains("websocket")
         || error_lower.contains("handshake")
+        || error_lower.contains("hung")
+        || error_lower.contains("never generate")
 }
 
 #[event(fetch)]
@@ -207,8 +209,13 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
             }
         });
 
-        // Return WebSocket response immediately - processing happens in spawned task
-        Response::from_websocket(client)
+        // CRITICAL FIX: Handle Response::from_websocket() errors to prevent hung workers
+        // If this fails (e.g., client disconnected), we must return a proper error response
+        // instead of leaving an unresolved Promise that hangs the worker
+        Response::from_websocket(client).or_else(|e| {
+            console_log!("[DEBUG] WebSocket response creation failed: {}", e);
+            Response::error("WebSocket handshake failed", 400)
+        })
     } else {
         Response::from_html("hi from wasm!")
     }
