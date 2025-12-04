@@ -161,7 +161,12 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
             
             // Accept connection inside spawned task to avoid blocking response
             if let Err(e) = server.accept() {
-                console_log!("[ERROR] Failed to accept WebSocket: {}", e);
+                let error_msg = e.to_string();
+                if !is_benign_error(&error_msg) {
+                    console_log!("[ERROR] Failed to accept WebSocket: {}", error_msg);
+                } else {
+                    console_log!("[DEBUG] Benign WebSocket accept error: {}", error_msg);
+                }
                 let _ = server.close(Some(1011), Some("Failed to accept connection".to_string()));
                 return;
             }
@@ -174,6 +179,8 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                         let error_msg = e.to_string();
                         if !is_benign_error(&error_msg) {
                             console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
+                        } else {
+                            console_log!("[DEBUG] Benign WebSocket events error: {}", error_msg);
                         }
                         let _ = server.close(Some(1011), Some("Failed to get events".to_string()));
                         return;
@@ -190,6 +197,8 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
                         let error_msg = e.to_string();
                         if !is_benign_error(&error_msg) {
                             console_log!("[ERROR] Proxy processing failed: {}", error_msg);
+                        } else {
+                            console_log!("[DEBUG] Benign proxy processing error: {}", error_msg);
                         }
                         // Explicit close on error with internal error code
                         let _ = server.close(Some(1011), Some("Internal error".to_string()));
