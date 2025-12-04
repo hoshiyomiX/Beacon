@@ -40,7 +40,7 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("timeout")
 }
 
-/// WASM-compatible bidirectional copy with 30s timeout
+/// WASM-compatible bidirectional copy with 8s timeout for free tier
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -156,17 +156,17 @@ where
         Ok((a_to_b, b_to_a))
     };
 
-    // 30-second timeout for bidirectional transfer
-    let timeout = TimeoutFuture::new(30_000);
+    // 8-second timeout for free tier compliance
+    let timeout = TimeoutFuture::new(8_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[TIMEOUT] Bidirectional copy exceeded 30s");
+            console_log!("[TIMEOUT] Bidirectional copy exceeded 8s");
             Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                "Transfer timeout after 30s"
+                "Transfer timeout after 8s"
             ))
         }
     }
@@ -210,8 +210,8 @@ impl<'a> ProxyStream<'a> {
             Ok(())
         };
 
-        // 10-second timeout for buffer filling
-        let timeout = TimeoutFuture::new(10_000);
+        // 8-second timeout for free tier compliance
+        let timeout = TimeoutFuture::new(8_000);
         futures_util::pin_mut!(fill_future);
         
         match futures_util::future::select(fill_future, timeout).await {
@@ -318,14 +318,14 @@ impl<'a> ProxyStream<'a> {
             );
         }
 
-        // Connect with 30s timeout
+        // Connect with 8s timeout for free tier compliance
         let connect_future = async {
             let mut remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let timeout = TimeoutFuture::new(30_000);
+        let timeout = TimeoutFuture::new(8_000);
         futures_util::pin_mut!(connect_future);
         
         let mut remote_socket = match futures_util::future::select(connect_future, timeout).await {
@@ -359,7 +359,7 @@ impl<'a> ProxyStream<'a> {
                 }
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[TIMEOUT] Connection to {}:{} timed out after 30s", &addr, port);
+                console_log!("[TIMEOUT] Connection to {}:{} timed out after 8s", &addr, port);
                 return Err(Error::RustError(format!(
                     "Connection timeout to {}:{}", &addr, port
                 )));
