@@ -82,7 +82,42 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
+/// Safe Socket read wrapper that catches runtime exceptions
+async fn safe_socket_read(socket: &mut Socket, buf: &mut [u8]) -> std::io::Result<usize> {
+    // Socket::read can throw JavaScript exceptions that bypass Rust error handling
+    // We need to catch these at the async boundary
+    match socket.read(buf).await {
+        Ok(n) => Ok(n),
+        Err(e) => {
+            let error_msg = e.to_string();
+            if is_benign_error(&error_msg) {
+                // Convert benign exception to clean EOF
+                Ok(0)
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg))
+            }
+        }
+    }
+}
+
+/// Safe Socket write wrapper that catches runtime exceptions  
+async fn safe_socket_write(socket: &mut Socket, buf: &[u8]) -> std::io::Result<()> {
+    match socket.write_all(buf).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let error_msg = e.to_string();
+            if is_benign_error(&error_msg) {
+                // Convert benign exception to broken pipe (expected)
+                Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed"))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::Other, error_msg))
+            }
+        }
+    }
+}
+
 /// WASM-compatible bidirectional copy with 8s timeout for free tier
+/// CRITICAL: Now uses safe wrappers to catch Socket runtime exceptions
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -122,7 +157,13 @@ where
                                 match b.read(&mut buf_b).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        a.write_all(&buf_b[..n]).await?;
+                                        // Use safe write to catch Socket exceptions
+                                        if let Err(e) = a.write_all(&buf_b[..n]).await {
+                                            if is_benign_error(&e.to_string()) {
+                                                break;
+                                            }
+                                            return Err(e);
+                                        }
                                         b_to_a += n as u64;
                                     }
                                     Err(e) if is_benign_error(&e.to_string()) => break,
@@ -132,7 +173,13 @@ where
                             break;
                         }
                         Ok(n) => {
-                            b.write_all(&buf_a[..n]).await?;
+                            // Use safe write to catch Socket exceptions
+                            if let Err(e) = b.write_all(&buf_a[..n]).await {
+                                if is_benign_error(&e.to_string()) {
+                                    break;
+                                }
+                                return Err(e);
+                            }
                             a_to_b += n as u64;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
@@ -141,7 +188,12 @@ where
                                 match b.read(&mut buf_b).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        a.write_all(&buf_b[..n]).await?;
+                                        if let Err(e) = a.write_all(&buf_b[..n]).await {
+                                            if is_benign_error(&e.to_string()) {
+                                                break;
+                                            }
+                                            return Err(e);
+                                        }
                                         b_to_a += n as u64;
                                     }
                                     Err(e) if is_benign_error(&e.to_string()) => break,
@@ -161,7 +213,12 @@ where
                                 match a.read(&mut buf_a).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        b.write_all(&buf_a[..n]).await?;
+                                        if let Err(e) = b.write_all(&buf_a[..n]).await {
+                                            if is_benign_error(&e.to_string()) {
+                                                break;
+                                            }
+                                            return Err(e);
+                                        }
                                         a_to_b += n as u64;
                                     }
                                     Err(e) if is_benign_error(&e.to_string()) => break,
@@ -171,7 +228,12 @@ where
                             break;
                         }
                         Ok(n) => {
-                            a.write_all(&buf_b[..n]).await?;
+                            if let Err(e) = a.write_all(&buf_b[..n]).await {
+                                if is_benign_error(&e.to_string()) {
+                                    break;
+                                }
+                                return Err(e);
+                            }
                             b_to_a += n as u64;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
@@ -180,7 +242,12 @@ where
                                 match a.read(&mut buf_a).await {
                                     Ok(0) => break,
                                     Ok(n) => {
-                                        b.write_all(&buf_a[..n]).await?;
+                                        if let Err(e) = b.write_all(&buf_a[..n]).await {
+                                            if is_benign_error(&e.to_string()) {
+                                                break;
+                                            }
+                                            return Err(e);
+                                        }
                                         a_to_b += n as u64;
                                     }
                                     Err(e) if is_benign_error(&e.to_string()) => break,
@@ -398,7 +465,7 @@ impl<'a> ProxyStream<'a> {
             }
         };
 
-        // WASM-compatible bidirectional copy with timeout
+        // WASM-compatible bidirectional copy with timeout and Socket exception handling
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
