@@ -8,6 +8,7 @@ on:
       - master
       - debug
       - testing
+      - wrangler-v4-test
     paths-ignore:
       - 'README.md'
       - 'LICENSE.md'
@@ -312,7 +313,8 @@ jobs:
           echo ""
           echo "=== All build artifacts validated successfully ==="
 
-      - name: Deploy to Cloudflare Workers
+      - name: Deploy to Cloudflare Workers with Wrangler v4
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '4.53.0'
