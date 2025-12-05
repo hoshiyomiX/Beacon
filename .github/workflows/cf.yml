@@ -24,17 +24,32 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install wasm-bindgen-cli 0.2.105
+      - name: Clear old build tools cache
         run: |
-          cargo install -f wasm-bindgen-cli --version 0.2.105
+          echo "Removing cached worker-build to force latest version"
+          rm -rf ~/.cargo/bin/worker-build || true
+          rm -rf ~/.cargo/bin/wasm-bindgen || true
+          echo "Cache cleared"
+
+      - name: Install wasm-bindgen-cli 0.2.106
+        run: |
+          cargo install -f wasm-bindgen-cli --version 0.2.106
           wasm-bindgen --version
 
-      - name: Install worker-build
-        run: cargo install -q worker-build
+      - name: Install worker-build (latest from git)
+        run: |
+          echo "Installing latest worker-build with wasm-bindgen 0.2.106 support"
+          cargo install --git https://github.com/cloudflare/workers-rs --force worker-build
+          worker-build --version || echo "worker-build version command not available"
+
+      - name: Clean build artifacts
+        run: |
+          cargo clean
+          rm -rf build/ || true
 
       - name: Build WASM
         run: |
-          echo "Building with wasm-bindgen 0.2.105 (pinned in Cargo.toml)"
+          echo "Building with wasm-bindgen 0.2.106 (pinned in Cargo.toml)"
           worker-build --release
 
       - name: Inspect workspace structure
