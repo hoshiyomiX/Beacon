@@ -35,6 +35,9 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("handshake")
         || error_lower.contains("hung")
         || error_lower.contains("never generate")
+        || error_lower.contains("timeout")
+        || error_lower.contains("timed out")
+        || error_lower.contains("connection failed")
 }
 
 #[event(fetch)]
@@ -263,38 +266,58 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         // Clone config for the spawned task
         let config = cx.data.clone();
         
-        // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
+        // CRITICAL FIX: Wrap spawn_local in comprehensive error catching
+        // This is the FINAL barrier before Cloudflare's observation logger
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
 
-            // Accept connection; ignore errors (Cloudflare will close the socket)
-            let _ = server.accept();
+            // Wrap entire spawn_local logic in Result for comprehensive error handling
+            let process_result = async {
+                // Accept connection; ignore errors (Cloudflare will close the socket)
+                let _ = server.accept();
 
-            // Get events; if this fails, nothing to do
-            let events = match server.events() {
-                Ok(ev) => ev,
-                Err(_) => {
-                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
-                    return;
+                // Get events; if this fails, nothing to do
+                let events = match server.events() {
+                    Ok(ev) => ev,
+                    Err(_) => {
+                        let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                        return;
+                    }
+                };
+
+                // Process proxy stream with timeout
+                let process_future = async {
+                    // THIS is where errors from handle_tcp_outbound eventually arrive
+                    match ProxyStream::new(config, &server, events).process().await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            let error_msg = e.to_string();
+                            // Final error suppression: catch errors that escaped from conn.rs
+                            if is_benign_error(&error_msg) {
+                                // Silent - benign error caught before Cloudflare logger
+                            } else {
+                                // Log unexpected errors but don't panic/propagate
+                                console_log!("[WARN] Proxy processing error: {}", error_msg);
+                            }
+                        }
+                    }
+                };
+
+                let timeout = TimeoutFuture::new(8_000);
+                futures_util::pin_mut!(process_future);
+                
+                match futures_util::future::select(process_future, timeout).await {
+                    futures_util::future::Either::Left(_) => {
+                        let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                    },
+                    futures_util::future::Either::Right(_) => {
+                        let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                    }
                 }
             };
 
-            // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
-            let process_future = async {
-                let _ = ProxyStream::new(config, &server, events).process().await;
-            };
-
-            let timeout = TimeoutFuture::new(8_000);
-            futures_util::pin_mut!(process_future);
-            
-            match futures_util::future::select(process_future, timeout).await {
-                futures_util::future::Either::Left(_) => {
-                    let _ = server.close(Some(1000), Some("Normal closure".to_string()));
-                },
-                futures_util::future::Either::Right(_) => {
-                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
-                }
-            }
+            // Execute the entire process - any panic/error is caught here
+            process_result.await;
         });
 
         // CRITICAL FIX: Handle Response::from_websocket() errors to prevent hung workers

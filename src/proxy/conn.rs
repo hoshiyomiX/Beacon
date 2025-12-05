@@ -361,7 +361,6 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // CRITICAL FIX: Wrap entire connection logic to catch errors BEFORE Cloudflare logger
         // Connect with 8s timeout for free tier compliance
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
@@ -380,28 +379,22 @@ impl<'a> ProxyStream<'a> {
             futures_util::future::Either::Left((Err(e), _)) => {
                 let error_msg = e.to_string();
                 
-                // EARLY ERROR SUPPRESSION: Catch benign connection errors before propagation
-                if is_benign_error(&error_msg) {
-                    console_log!("[DEBUG] Benign connection error to {}:{} - {}", &addr, port, error_msg);
-                    // Return Ok() instead of Err() to prevent Cloudflare logging
-                    return Ok(());
-                }
-                
-                // Log non-benign errors but still suppress from Cloudflare logger
+                // Log for debugging but propagate error for proper failover logic
                 if error_msg.to_lowercase().contains("http") {
-                    console_log!("[DEBUG] HTTP service detected at {}:{}", &addr, port);
+                    console_log!(
+                        "[DEBUG] HTTP service detected at {}:{}",
+                        &addr, port
+                    );
                 } else {
-                    console_log!("[WARN] Connection failed to {}:{} - {}", &addr, port, error_msg);
+                    console_log!("[DEBUG] Connection failed to {}:{}", &addr, port);
                 }
                 
-                // Return Ok() to suppress from Cloudflare observation logger
-                // Protocols with failover logic will handle this gracefully
-                return Ok(());
+                // Return error to enable protocol failover logic
+                return Err(Error::RustError(format!("Connection failed to {}:{}", &addr, port)));
             },
             futures_util::future::Either::Right(_) => {
                 console_log!("[DEBUG] Connection timeout to {}:{}", &addr, port);
-                // Timeout is benign - return Ok() to prevent Cloudflare logging
-                return Ok(());
+                return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
@@ -417,9 +410,8 @@ impl<'a> ProxyStream<'a> {
             Err(e) => {
                 let error_msg = e.to_string();
                 
-                // EARLY ERROR SUPPRESSION: Catch transfer errors before Cloudflare logging
+                // Check if transfer error is benign
                 if is_benign_error(&error_msg) {
-                    // Silent success - benign transfer error (connection lost, EOF, etc.)
                     return Ok(());
                 }
                 
@@ -429,10 +421,9 @@ impl<'a> ProxyStream<'a> {
                     return Ok(());
                 }
                 
-                // Log unexpected errors but still suppress from Cloudflare logger
-                console_log!("[ERROR] Unexpected transfer error for {}:{} - {}", &addr, port, error_msg);
-                // Return Ok() to prevent exception propagation to Cloudflare
-                Ok(())
+                // Propagate unexpected errors
+                console_log!("[ERROR] Transfer error for {}:{} - {}", &addr, port, error_msg);
+                Err(Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg)))
             }
         }
     }
