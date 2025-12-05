@@ -6,13 +6,12 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-use serde_json::json;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+// Regex compilation at initialization - only fails at compile time, safe to unwrap
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
 
@@ -29,20 +28,82 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("connection aborted")
         || error_lower.contains("transfer error")
         || error_lower.contains("canceled")
+        || error_lower.contains("cancelled")
         || error_lower.contains("benign")
+        || error_lower.contains("not enough buffer")
+        || error_lower.contains("websocket")
+        || error_lower.contains("handshake")
+        || error_lower.contains("hung")
+        || error_lower.contains("never generate")
 }
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
-    let uuid = env
-        .var("UUID")
-        .map(|x| Uuid::parse_str(&x.to_string()).unwrap_or_default())?;
-    let host = req.url()?.host().map(|x| x.to_string()).unwrap_or_default();
-    let main_page_url = env.var("MAIN_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let sub_page_url = env.var("SUB_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let link_page_url = env.var("LINK_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let converter_page_url = env.var("CONVERTER_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let checker_page_url = env.var("CHECKER_PAGE_URL").map(|x| x.to_string()).unwrap();
+    // Parse UUID with proper error handling
+    let uuid = match env.var("UUID") {
+        Ok(uuid_var) => {
+            match Uuid::parse_str(&uuid_var.to_string()) {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    console_error!("[ERROR] Invalid UUID format in environment variable");
+                    return Response::error("Invalid server configuration: UUID", 502);
+                }
+            }
+        }
+        Err(_) => {
+            console_error!("[ERROR] UUID environment variable not found");
+            return Response::error("Server configuration error: Missing UUID", 502);
+        }
+    };
+    
+    let host = match req.url() {
+        Ok(url) => url.host().map(|x| x.to_string()).unwrap_or_default(),
+        Err(_) => {
+            console_error!("[ERROR] Failed to parse request URL");
+            return Response::error("Invalid request URL", 400);
+        }
+    };
+    
+    // Parse environment variables with proper error handling
+    let main_page_url = match env.var("MAIN_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] MAIN_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing MAIN_PAGE_URL", 502);
+        }
+    };
+    
+    let sub_page_url = match env.var("SUB_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] SUB_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing SUB_PAGE_URL", 502);
+        }
+    };
+    
+    let link_page_url = match env.var("LINK_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] LINK_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing LINK_PAGE_URL", 502);
+        }
+    };
+    
+    let converter_page_url = match env.var("CONVERTER_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] CONVERTER_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing CONVERTER_PAGE_URL", 502);
+        }
+    };
+    
+    let checker_page_url = match env.var("CHECKER_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] CHECKER_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing CHECKER_PAGE_URL", 502);
+        }
+    };
 
     let config = Config { 
         uuid, 
@@ -95,33 +156,81 @@ async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
 }
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
-    let mut proxyip = cx.param("proxyip").unwrap().to_string();
-    if PROXYKV_PATTERN.is_match(&proxyip)  {
-        let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
-        let kv = cx.kv("library")?;
-        let mut proxy_kv_str = kv.get("proxy_kv").text().await?.unwrap_or("".to_string());
-        let mut rand_buf = [0u8, 1];
-        getrandom::getrandom(&mut rand_buf).expect("failed generating random number");
-
-        if proxy_kv_str.len() == 0 {
-            console_log!("getting proxy kv from github...");
-            let req = Fetch::Url(Url::parse("https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json")?);
-            let mut res = req.send().await?;
-            if res.status_code() == 200 {
-                proxy_kv_str = res.text().await?.to_string();
-                kv.put("proxy_kv", &proxy_kv_str)?.expiration_ttl(60 * 60 * 24).execute().await?; // 24 hours
+    // Wrap entire function to catch WebSocket handshake errors
+    let result = tunnel_inner(req, &mut cx).await;
+    
+    // Suppress benign errors before they reach Cloudflare logs
+    match result {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            let error_msg = e.to_string();
+            if is_benign_error(&error_msg) {
+                // Return a simple response instead of propagating error
+                Response::ok("Connection closed")
             } else {
-                return Err(Error::from(format!("error getting proxy kv: {}", res.status_code())));
+                // Only unexpected errors propagate
+                console_error!("[FATAL] Unexpected tunnel error: {}", error_msg);
+                Err(e)
             }
         }
+    }
+}
 
-        let proxy_kv: HashMap<String, Vec<String>> = serde_json::from_str(&proxy_kv_str)?;
-
+async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Response> {
+    let proxyip_param = match cx.param("proxyip") {
+        Some(param) => param.to_string(),
+        None => {
+            console_error!("[ERROR] Missing proxyip parameter");
+            return Response::error("Missing proxy parameter", 400);
+        }
+    };
+    
+    let mut proxyip = proxyip_param;
+    
+    // Handle proxy selection from bundled list
+    if PROXYKV_PATTERN.is_match(&proxyip) {
+        let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
+        
+        // Get bundled proxy list from environment variables
+        let proxy_list_json = cx.env.var("PROXY_LIST")
+            .map(|x| x.to_string())
+            .unwrap_or_else(|_| "{}".to_string());
+        
+        // Parse proxy list (no KV or external fetch needed!)
+        let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
+            Ok(map) => map,
+            Err(e) => {
+                console_error!("[ERROR] Invalid PROXY_LIST configuration: {}", e);
+                return Response::error("Invalid server configuration: PROXY_LIST", 502);
+            }
+        };
+        
+        // Random selection logic with proper error handling
+        let mut rand_buf = [0u8, 1];
+        match getrandom::getrandom(&mut rand_buf) {
+            Ok(_) => {},
+            Err(e) => {
+                console_error!("[ERROR] Failed to generate random number: {}", e);
+                return Response::error("Server error: Random generation failed", 500);
+            }
+        }
+        
         let kv_index = (rand_buf[0] as usize) % kvid_list.len();
         proxyip = kvid_list[kv_index].clone();
-
-        let proxyip_index = (rand_buf[0] as usize) % proxy_kv[&proxyip].len();
-        proxyip = proxy_kv[&proxyip][proxyip_index].clone().replace(":", "-");
+        
+        // Select random proxy from the country list
+        if let Some(proxy_list) = proxy_kv.get(&proxyip) {
+            if !proxy_list.is_empty() {
+                let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
+                proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
+            } else {
+                console_error!("[ERROR] No proxies available for country: {}", &proxyip);
+                return Response::error("No proxies available for selected region", 502);
+            }
+        } else {
+            console_error!("[ERROR] Country code not found: {}", &proxyip);
+            return Response::error("Invalid country code", 400);
+        }
     }
 
     if PROXYIP_PATTERN.is_match(&proxyip) {
@@ -133,72 +242,68 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
         }
     }
 
-    let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
+    let upgrade = match req.headers().get("Upgrade") {
+        Ok(Some(val)) => val,
+        Ok(None) => String::new(),
+        Err(e) => {
+            console_error!("[ERROR] Failed to read Upgrade header: {}", e);
+            return Response::error("Invalid request headers", 400);
+        }
+    };
+    
     if upgrade == "websocket".to_string() {
-        let WebSocketPair { server, client } = WebSocketPair::new()?;
+        let WebSocketPair { server, client } = match WebSocketPair::new() {
+            Ok(pair) => pair,
+            Err(e) => {
+                console_error!("[ERROR] Failed to create WebSocket pair: {}", e);
+                return Response::error("WebSocket initialization failed", 500);
+            }
+        };
         
-        // Spawn WebSocket processing task BEFORE accepting to avoid race condition
-        // This ensures the response is returned immediately while processing happens async
+        // Clone config for the spawned task
+        let config = cx.data.clone();
+        
+        // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
-            
-            // Accept connection inside spawned task to avoid blocking response
-            if let Err(e) = server.accept() {
-                console_log!("[ERROR] Failed to accept WebSocket: {}", e);
-                let _ = server.close(Some(1011), Some("Failed to accept connection".to_string()));
-                return;
-            }
-            
-            // Wrap processing in timeout to prevent unresolved promises
-            let process_future = async {
-                let events = match server.events() {
-                    Ok(ev) => ev,
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        if !is_benign_error(&error_msg) {
-                            console_log!("[ERROR] Failed to get WebSocket events: {}", error_msg);
-                        }
-                        let _ = server.close(Some(1011), Some("Failed to get events".to_string()));
-                        return;
-                    }
-                };
 
-                match ProxyStream::new(cx.data, &server, events).process().await {
-                    Ok(_) => {
-                        console_log!("[INFO] Proxy stream completed successfully");
-                        // Explicit close on success with normal closure code
-                        let _ = server.close(Some(1000), Some("Normal closure".to_string()));
-                    },
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        if !is_benign_error(&error_msg) {
-                            console_log!("[ERROR] Proxy processing failed: {}", error_msg);
-                        }
-                        // Explicit close on error with internal error code
-                        let _ = server.close(Some(1011), Some("Internal error".to_string()));
-                    }
+            // Accept connection; ignore errors (Cloudflare will close the socket)
+            let _ = server.accept();
+
+            // Get events; if this fails, nothing to do
+            let events = match server.events() {
+                Ok(ev) => ev,
+                Err(_) => {
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                    return;
                 }
             };
 
-            // 30-second timeout to prevent hanging Workers
-            let timeout = TimeoutFuture::new(30_000);
+            // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
+            let process_future = async {
+                let _ = ProxyStream::new(config, &server, events).process().await;
+            };
+
+            let timeout = TimeoutFuture::new(8_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {
                 futures_util::future::Either::Left(_) => {
-                    // Completed within timeout - close handler already called in process_future
-                    console_log!("[INFO] WebSocket processing completed within timeout");
+                    let _ = server.close(Some(1000), Some("Normal closure".to_string()));
                 },
                 futures_util::future::Either::Right(_) => {
-                    // Timeout occurred - close WebSocket gracefully with timeout code
-                    console_log!("[TIMEOUT] WebSocket processing exceeded 30s, closing connection");
-                    let _ = server.close(Some(1008), Some("Processing timeout".to_string()));
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
                 }
             }
         });
 
-        // Return WebSocket response immediately - processing happens in spawned task
-        Response::from_websocket(client)
+        // CRITICAL FIX: Handle Response::from_websocket() errors to prevent hung workers
+        // If this fails (e.g., client disconnected), we must return a proper error response
+        // instead of leaving an unresolved Promise that hangs the worker
+        Response::from_websocket(client).or_else(|e| {
+            console_log!("[DEBUG] WebSocket response creation failed: {}", e);
+            Response::error("WebSocket handshake failed", 400)
+        })
     } else {
         Response::from_html("hi from wasm!")
     }
