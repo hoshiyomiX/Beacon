@@ -11,6 +11,7 @@ use worker::*;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+// Regex compilation at initialization - only fails at compile time, safe to unwrap
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
 
@@ -38,15 +39,71 @@ fn is_benign_error(error_msg: &str) -> bool {
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
-    let uuid = env
-        .var("UUID")
-        .map(|x| Uuid::parse_str(&x.to_string()).unwrap_or_default())?;
-    let host = req.url()?.host().map(|x| x.to_string()).unwrap_or_default();
-    let main_page_url = env.var("MAIN_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let sub_page_url = env.var("SUB_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let link_page_url = env.var("LINK_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let converter_page_url = env.var("CONVERTER_PAGE_URL").map(|x| x.to_string()).unwrap();
-    let checker_page_url = env.var("CHECKER_PAGE_URL").map(|x| x.to_string()).unwrap();
+    // Parse UUID with proper error handling
+    let uuid = match env.var("UUID") {
+        Ok(uuid_var) => {
+            match Uuid::parse_str(&uuid_var.to_string()) {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    console_error!("[ERROR] Invalid UUID format in environment variable");
+                    return Response::error("Invalid server configuration: UUID", 502);
+                }
+            }
+        }
+        Err(_) => {
+            console_error!("[ERROR] UUID environment variable not found");
+            return Response::error("Server configuration error: Missing UUID", 502);
+        }
+    };
+    
+    let host = match req.url() {
+        Ok(url) => url.host().map(|x| x.to_string()).unwrap_or_default(),
+        Err(_) => {
+            console_error!("[ERROR] Failed to parse request URL");
+            return Response::error("Invalid request URL", 400);
+        }
+    };
+    
+    // Parse environment variables with proper error handling
+    let main_page_url = match env.var("MAIN_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] MAIN_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing MAIN_PAGE_URL", 502);
+        }
+    };
+    
+    let sub_page_url = match env.var("SUB_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] SUB_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing SUB_PAGE_URL", 502);
+        }
+    };
+    
+    let link_page_url = match env.var("LINK_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] LINK_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing LINK_PAGE_URL", 502);
+        }
+    };
+    
+    let converter_page_url = match env.var("CONVERTER_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] CONVERTER_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing CONVERTER_PAGE_URL", 502);
+        }
+    };
+    
+    let checker_page_url = match env.var("CHECKER_PAGE_URL") {
+        Ok(val) => val.to_string(),
+        Err(_) => {
+            console_error!("[ERROR] CHECKER_PAGE_URL not configured");
+            return Response::error("Server configuration error: Missing CHECKER_PAGE_URL", 502);
+        }
+    };
 
     let config = Config { 
         uuid, 
@@ -120,7 +177,15 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
 }
 
 async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Response> {
-    let mut proxyip = cx.param("proxyip").unwrap().to_string();
+    let proxyip_param = match cx.param("proxyip") {
+        Some(param) => param.to_string(),
+        None => {
+            console_error!("[ERROR] Missing proxyip parameter");
+            return Response::error("Missing proxy parameter", 400);
+        }
+    };
+    
+    let mut proxyip = proxyip_param;
     
     // Handle proxy selection from bundled list
     if PROXYKV_PATTERN.is_match(&proxyip) {
@@ -135,13 +200,20 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
             Ok(map) => map,
             Err(e) => {
-                return Err(Error::from(format!("Invalid PROXY_LIST configuration: {}", e)));
+                console_error!("[ERROR] Invalid PROXY_LIST configuration: {}", e);
+                return Response::error("Invalid server configuration: PROXY_LIST", 502);
             }
         };
         
-        // Random selection logic
+        // Random selection logic with proper error handling
         let mut rand_buf = [0u8, 1];
-        getrandom::getrandom(&mut rand_buf).expect("failed generating random number");
+        match getrandom::getrandom(&mut rand_buf) {
+            Ok(_) => {},
+            Err(e) => {
+                console_error!("[ERROR] Failed to generate random number: {}", e);
+                return Response::error("Server error: Random generation failed", 500);
+            }
+        }
         
         let kv_index = (rand_buf[0] as usize) % kvid_list.len();
         proxyip = kvid_list[kv_index].clone();
@@ -152,10 +224,12 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                 let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
                 proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
             } else {
-                return Err(Error::from(format!("No proxies available for country: {}", &proxyip)));
+                console_error!("[ERROR] No proxies available for country: {}", &proxyip);
+                return Response::error("No proxies available for selected region", 502);
             }
         } else {
-            return Err(Error::from(format!("Country code not found: {}", &proxyip)));
+            console_error!("[ERROR] Country code not found: {}", &proxyip);
+            return Response::error("Invalid country code", 400);
         }
     }
 
@@ -168,9 +242,23 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         }
     }
 
-    let upgrade = req.headers().get("Upgrade")?.unwrap_or("".to_string());
+    let upgrade = match req.headers().get("Upgrade") {
+        Ok(Some(val)) => val,
+        Ok(None) => String::new(),
+        Err(e) => {
+            console_error!("[ERROR] Failed to read Upgrade header: {}", e);
+            return Response::error("Invalid request headers", 400);
+        }
+    };
+    
     if upgrade == "websocket".to_string() {
-        let WebSocketPair { server, client } = WebSocketPair::new()?;
+        let WebSocketPair { server, client } = match WebSocketPair::new() {
+            Ok(pair) => pair,
+            Err(e) => {
+                console_error!("[ERROR] Failed to create WebSocket pair: {}", e);
+                return Response::error("WebSocket initialization failed", 500);
+            }
+        };
         
         // Clone config for the spawned task
         let config = cx.data.clone();
