@@ -45,6 +45,12 @@ jobs:
           cargo install --git https://github.com/cloudflare/workers-rs --force worker-build
           worker-build --version || echo "worker-build version command not available"
 
+      - name: Update Cargo.lock to resolve wasm-bindgen patches
+        run: |
+          echo "Updating Cargo.lock to sync with wasm-bindgen 0.2.106"
+          cargo update -p wasm-bindgen -p wasm-bindgen-futures
+          echo "Cargo.lock updated"
+
       - name: Install WASM verification tools
         run: |
           echo "Installing wasm-tools for advanced WASM verification"
