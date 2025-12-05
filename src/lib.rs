@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
@@ -172,9 +173,9 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         
-        // CRITICAL FIX: Process WebSocket within the SAME request context
-        // Do NOT use spawn_local as it creates closures that persist across Worker invocations
-        // and cause "Cannot invoke closure from previous WASM instance" errors
+        // CRITICAL FIX: Use Rc to share WebSocket across closures
+        // Prevents "Cannot invoke closure from previous WASM instance" by properly managing lifecycle
+        let server = Rc::new(server);
         let config = cx.data.clone();
         
         // Accept connection immediately
@@ -188,19 +189,19 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
             })?;
         
         // Process WebSocket stream in background using event context
-        // This keeps the task within the current request's execution context
         if let Ok(events) = server.events() {
             use gloo_timers::future::TimeoutFuture;
             
+            let server_clone = Rc::clone(&server);
             let process_future = async move {
-                let _ = ProxyStream::new(config, &server, events).process().await;
-                let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                let _ = ProxyStream::new(config, &server_clone, events).process().await;
+                let _ = server_clone.close(Some(1000), Some("Normal closure".to_string()));
             };
             
             let timeout = TimeoutFuture::new(8_000);
             
-            // Use select to race between processing and timeout
-            // Both futures stay within the request context
+            // Spawn background task with properly scoped closures
+            let server_timeout = Rc::clone(&server);
             wasm_bindgen_futures::spawn_local(async move {
                 futures_util::pin_mut!(process_future);
                 match futures_util::future::select(process_future, timeout).await {
@@ -209,7 +210,7 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                     },
                     futures_util::future::Either::Right(_) => {
                         console_log!("[DEBUG] WebSocket processing timed out");
-                        let _ = server.close(Some(1000), Some("Connection timeout".to_string()));
+                        let _ = server_timeout.close(Some(1000), Some("Connection timeout".to_string()));
                     }
                 }
             });
