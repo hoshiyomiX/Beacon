@@ -6,7 +6,6 @@ use crate::config::Config;
 use crate::proxy::*;
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use uuid::Uuid;
 use worker::*;
 use once_cell::sync::Lazy;
@@ -173,50 +172,50 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
     if upgrade == "websocket".to_string() {
         let WebSocketPair { server, client } = WebSocketPair::new()?;
         
-        // CRITICAL FIX: Use Rc to share WebSocket across closures
-        // Prevents "Cannot invoke closure from previous WASM instance" by properly managing lifecycle
-        let server = Rc::new(server);
+        // Clone config for the spawned task
         let config = cx.data.clone();
         
-        // Accept connection immediately
-        server.accept();
-        
-        // Return response first to avoid "script will never generate a response" errors
-        let response = Response::from_websocket(client)
-            .or_else(|e| {
-                console_log!("[DEBUG] WebSocket response creation failed: {}", e);
-                Response::error("WebSocket handshake failed", 400)
-            })?;
-        
-        // Process WebSocket stream in background using event context
-        if let Ok(events) = server.events() {
+        // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
+        wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
-            
-            let server_clone = Rc::clone(&server);
-            let process_future = async move {
-                let _ = ProxyStream::new(config, &server_clone, events).process().await;
-                let _ = server_clone.close(Some(1000), Some("Normal closure".to_string()));
-            };
-            
-            let timeout = TimeoutFuture::new(8_000);
-            
-            // Spawn background task with properly scoped closures
-            let server_timeout = Rc::clone(&server);
-            wasm_bindgen_futures::spawn_local(async move {
-                futures_util::pin_mut!(process_future);
-                match futures_util::future::select(process_future, timeout).await {
-                    futures_util::future::Either::Left(_) => {
-                        console_log!("[DEBUG] WebSocket processing completed");
-                    },
-                    futures_util::future::Either::Right(_) => {
-                        console_log!("[DEBUG] WebSocket processing timed out");
-                        let _ = server_timeout.close(Some(1000), Some("Connection timeout".to_string()));
-                    }
+
+            // Accept connection; ignore errors (Cloudflare will close the socket)
+            let _ = server.accept();
+
+            // Get events; if this fails, nothing to do
+            let events = match server.events() {
+                Ok(ev) => ev,
+                Err(_) => {
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                    return;
                 }
-            });
-        }
-        
-        Ok(response)
+            };
+
+            // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
+            let process_future = async {
+                let _ = ProxyStream::new(config, &server, events).process().await;
+            };
+
+            let timeout = TimeoutFuture::new(8_000);
+            futures_util::pin_mut!(process_future);
+            
+            match futures_util::future::select(process_future, timeout).await {
+                futures_util::future::Either::Left(_) => {
+                    let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                },
+                futures_util::future::Either::Right(_) => {
+                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                }
+            }
+        });
+
+        // CRITICAL FIX: Handle Response::from_websocket() errors to prevent hung workers
+        // If this fails (e.g., client disconnected), we must return a proper error response
+        // instead of leaving an unresolved Promise that hangs the worker
+        Response::from_websocket(client).or_else(|e| {
+            console_log!("[DEBUG] WebSocket response creation failed: {}", e);
+            Response::error("WebSocket handshake failed", 400)
+        })
     } else {
         Response::from_html("hi from wasm!")
     }
