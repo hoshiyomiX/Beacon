@@ -146,20 +146,27 @@ jobs:
         run: |
           echo "=== ADVANCED WASM VERIFICATION ==="
           
-          # Find main WASM file
+          # Find main WASM file - prioritize build/worker/ (processed by wasm-bindgen)
           WASM_FILE=""
-          if [ -f "build/index_bg.wasm" ]; then
-            WASM_FILE="build/index_bg.wasm"
-          elif [ -f "build/worker/index_bg.wasm" ]; then
+          if [ -f "build/worker/index_bg.wasm" ]; then
             WASM_FILE="build/worker/index_bg.wasm"
+            echo "Using processed WASM from build/worker/"
+          elif [ -f "build/index_bg.wasm" ]; then
+            WASM_FILE="build/index_bg.wasm"
+            echo "Using WASM from build/ root"
           elif [ -f "build/index.wasm" ]; then
             WASM_FILE="build/index.wasm"
+            echo "Using index.wasm"
           else
             echo "⚠️  Could not find main WASM file for deep inspection"
+            echo "Available WASM files:"
+            find build -name "*.wasm" -type f
             exit 0
           fi
           
           echo "Analyzing: $WASM_FILE"
+          WASM_SIZE=$(stat -c%s "$WASM_FILE" 2>/dev/null || stat -f%z "$WASM_FILE")
+          echo "File size: ${WASM_SIZE} bytes"
           echo ""
           
           # 1. Validate WASM structure
@@ -174,30 +181,32 @@ jobs:
           
           # 2. Dump WASM sections
           echo "[2] WASM Module Sections"
-          if wasm-tools objdump "$WASM_FILE" -h 2>/dev/null; then
+          SECTIONS=$(wasm-tools objdump "$WASM_FILE" -h 2>/dev/null || echo "")
+          if [ -n "$SECTIONS" ]; then
+            echo "$SECTIONS"
             echo "✅ Successfully inspected WASM sections"
           else
             echo "⚠️  Could not inspect sections"
           fi
           echo ""
           
-          # 3. Check exports
+          # 3. Check exports (using wasm-tools print for reliable parsing)
           echo "[3] WASM Exports (Entry Points)"
-          EXPORTS=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -E "export|Export" | head -20 || echo "")
+          EXPORTS=$(wasm-tools print "$WASM_FILE" 2>/dev/null | grep -E "^  \(export" | head -20 || echo "")
           if [ -n "$EXPORTS" ]; then
             echo "$EXPORTS"
-            EXPORT_COUNT=$(echo "$EXPORTS" | wc -l)
+            EXPORT_COUNT=$(echo "$EXPORTS" | wc -l | tr -d ' \n')
             echo "✅ Found ${EXPORT_COUNT} exports"
           else
-            echo "⚠️  No exports found"
+            echo "⚠️  No exports found (may be unprocessed WASM)"
           fi
           echo ""
           
           # 4. Check imports
           echo "[4] WASM Imports (Dependencies)"
-          IMPORTS=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -E "import|Import" | head -20 || echo "")
+          IMPORTS=$(wasm-tools print "$WASM_FILE" 2>/dev/null | grep -E "^  \(import" | head -20 || echo "")
           if [ -n "$IMPORTS" ]; then
-            IMPORT_COUNT=$(echo "$IMPORTS" | wc -l)
+            IMPORT_COUNT=$(echo "$IMPORTS" | wc -l | tr -d ' \n')
             echo "First 20 imports:"
             echo "$IMPORTS"
             echo "✅ Found ${IMPORT_COUNT} imports"
@@ -206,37 +215,53 @@ jobs:
           fi
           echo ""
           
-          # 5. Function analysis
+          # 5. Function analysis (fixed - properly sanitize count)
           echo "[5] WASM Function Count"
-          FUNC_COUNT=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -c "func" || echo "0")
+          FUNC_COUNT=$(wasm-tools print "$WASM_FILE" 2>/dev/null | grep -c "^  (func" || echo "0")
+          FUNC_COUNT=$(echo "$FUNC_COUNT" | tr -d ' \n')
           echo "Total functions: ${FUNC_COUNT}"
-          if [ "$FUNC_COUNT" -gt 10 ]; then
+          if [ "$FUNC_COUNT" -gt 10 ] 2>/dev/null; then
             echo "✅ Reasonable function count"
+          elif [ "$FUNC_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "⚠️  Low function count (${FUNC_COUNT})"
           else
-            echo "⚠️  Low function count (may indicate build issue)"
+            echo "⚠️  No functions found or count error"
           fi
           echo ""
           
           # 6. Memory configuration
           echo "[6] WASM Memory Configuration"
-          MEMORY_INFO=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -A 3 -E "Memory|memory" || echo "")
+          MEMORY_INFO=$(wasm-tools print "$WASM_FILE" 2>/dev/null | grep -A 2 "^  (memory" || echo "")
           if [ -n "$MEMORY_INFO" ]; then
             echo "$MEMORY_INFO"
             echo "✅ Memory configuration found"
           else
-            echo "ℹ️  Memory configuration not extracted"
+            echo "ℹ️  Memory configuration not found"
           fi
           echo ""
           
           # 7. Print first 50 lines of WAT disassembly
           echo "[7] WASM Disassembly Preview (first 50 lines)"
           if wasm-tools print "$WASM_FILE" 2>/dev/null | head -50; then
+            echo ""
             echo "✅ Successfully disassembled to WAT format"
           else
             echo "⚠️  Could not disassemble"
           fi
           echo ""
           
+          # 8. Summary
+          echo "=== VERIFICATION SUMMARY ==="
+          echo "File: $WASM_FILE"
+          echo "Size: ${WASM_SIZE} bytes"
+          echo "Functions: ${FUNC_COUNT}"
+          if [ -n "$EXPORTS" ]; then
+            echo "Exports: ${EXPORT_COUNT}"
+          fi
+          if [ -n "$IMPORTS" ]; then
+            echo "Imports: ${IMPORT_COUNT}"
+          fi
+          echo ""
           echo "=== ADVANCED VERIFICATION COMPLETE ==="
           echo "✅ WASM module is valid and ready for deployment"
 
