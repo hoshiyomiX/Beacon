@@ -24,12 +24,15 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Clear old build tools cache
+      - name: Clean build artifacts and cache
         run: |
+          echo "Running cargo clean to ensure fresh build"
+          cargo clean
           echo "Removing cached worker-build to force latest version"
           rm -rf ~/.cargo/bin/worker-build || true
           rm -rf ~/.cargo/bin/wasm-bindgen || true
-          echo "Cache cleared"
+          rm -rf build/ || true
+          echo "Cleanup completed"
 
       - name: Install wasm-bindgen-cli 0.2.106
         run: |
@@ -42,17 +45,18 @@ jobs:
           cargo install --git https://github.com/cloudflare/workers-rs --force worker-build
           worker-build --version || echo "worker-build version command not available"
 
-      - name: Clean build artifacts
+      - name: Install WASM verification tools
         run: |
-          cargo clean
-          rm -rf build/ || true
+          echo "Installing wasm-tools for advanced WASM verification"
+          cargo install wasm-tools
+          wasm-tools --version
 
       - name: Build WASM
         run: |
           echo "Building with wasm-bindgen 0.2.106 (pinned in Cargo.toml)"
           worker-build --release
 
-      - name: Verify WASM Compilation & Integrity
+      - name: Verify WASM compilation integrity
         run: |
           echo "=== WASM COMPILATION VERIFICATION ==="
           
@@ -118,17 +122,109 @@ jobs:
               echo "⚠️  Warning: WASM exceeds 1MB (free tier limit, OK for paid)"
             fi
             
-            # Basic section validation (should have Type/Code sections)
-            TYPE_SECTION=$(xxd -s 8 -l 1 -p "$wasm_file")
-            if [ "$TYPE_SECTION" != "01" ]; then
-              echo "⚠️  Warning: Unusual type section ID: $TYPE_SECTION"
-            fi
-            
             echo "✅ $wasm_file is VALID and NOT CORRUPT ✓"
           done
           
           echo ""
-          echo "=== ALL WASM FILES VERIFIED SUCCESSFULLY ==="
+          echo "=== WASM FILES VERIFIED SUCCESSFULLY ==="
+
+      - name: Advanced WASM verification with wasm-tools
+        run: |
+          echo "=== ADVANCED WASM VERIFICATION ==="
+          
+          # Find main WASM file
+          WASM_FILE=""
+          if [ -f "build/index_bg.wasm" ]; then
+            WASM_FILE="build/index_bg.wasm"
+          elif [ -f "build/worker/index_bg.wasm" ]; then
+            WASM_FILE="build/worker/index_bg.wasm"
+          elif [ -f "build/index.wasm" ]; then
+            WASM_FILE="build/index.wasm"
+          else
+            echo "⚠️  Could not find main WASM file for deep inspection"
+            exit 0
+          fi
+          
+          echo "Analyzing: $WASM_FILE"
+          echo ""
+          
+          # 1. Validate WASM structure
+          echo "[1] WASM Format Validation"
+          if wasm-tools validate "$WASM_FILE" 2>&1; then
+            echo "✅ WASM format is structurally valid"
+          else
+            echo "❌ WASM validation failed - file may be corrupted"
+            exit 1
+          fi
+          echo ""
+          
+          # 2. Dump WASM sections
+          echo "[2] WASM Module Sections"
+          if wasm-tools objdump "$WASM_FILE" -h 2>/dev/null; then
+            echo "✅ Successfully inspected WASM sections"
+          else
+            echo "⚠️  Could not inspect sections"
+          fi
+          echo ""
+          
+          # 3. Check exports
+          echo "[3] WASM Exports (Entry Points)"
+          EXPORTS=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -E "export|Export" | head -20 || echo "")
+          if [ -n "$EXPORTS" ]; then
+            echo "$EXPORTS"
+            EXPORT_COUNT=$(echo "$EXPORTS" | wc -l)
+            echo "✅ Found ${EXPORT_COUNT} exports"
+          else
+            echo "⚠️  No exports found"
+          fi
+          echo ""
+          
+          # 4. Check imports
+          echo "[4] WASM Imports (Dependencies)"
+          IMPORTS=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -E "import|Import" | head -20 || echo "")
+          if [ -n "$IMPORTS" ]; then
+            IMPORT_COUNT=$(echo "$IMPORTS" | wc -l)
+            echo "First 20 imports:"
+            echo "$IMPORTS"
+            echo "✅ Found ${IMPORT_COUNT} imports"
+          else
+            echo "ℹ️  No imports found"
+          fi
+          echo ""
+          
+          # 5. Function analysis
+          echo "[5] WASM Function Count"
+          FUNC_COUNT=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -c "func" || echo "0")
+          echo "Total functions: ${FUNC_COUNT}"
+          if [ "$FUNC_COUNT" -gt 10 ]; then
+            echo "✅ Reasonable function count"
+          else
+            echo "⚠️  Low function count (may indicate build issue)"
+          fi
+          echo ""
+          
+          # 6. Memory configuration
+          echo "[6] WASM Memory Configuration"
+          MEMORY_INFO=$(wasm-tools objdump "$WASM_FILE" -x 2>/dev/null | grep -A 3 -E "Memory|memory" || echo "")
+          if [ -n "$MEMORY_INFO" ]; then
+            echo "$MEMORY_INFO"
+            echo "✅ Memory configuration found"
+          else
+            echo "ℹ️  Memory configuration not extracted"
+          fi
+          echo ""
+          
+          # 7. Print first 50 lines of WAT disassembly
+          echo "[7] WASM Disassembly Preview (first 50 lines)"
+          if wasm-tools print "$WASM_FILE" 2>/dev/null | head -50; then
+            echo "✅ Successfully disassembled to WAT format"
+          else
+            echo "⚠️  Could not disassemble"
+          fi
+          echo ""
+          
+          echo "=== ADVANCED VERIFICATION COMPLETE ==="
+          echo "✅ WASM module is valid and ready for deployment"
 
       - name: Inspect workspace structure
         run: |
