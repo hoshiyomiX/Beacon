@@ -24,15 +24,12 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Clean build artifacts and cache
+      - name: Clear old build tools cache
         run: |
-          echo "Running cargo clean to ensure fresh build"
-          cargo clean
           echo "Removing cached worker-build to force latest version"
           rm -rf ~/.cargo/bin/worker-build || true
           rm -rf ~/.cargo/bin/wasm-bindgen || true
-          rm -rf build/ || true
-          echo "Cleanup completed"
+          echo "Cache cleared"
 
       - name: Install wasm-bindgen-cli 0.2.106
         run: |
@@ -44,6 +41,11 @@ jobs:
           echo "Installing latest worker-build with wasm-bindgen 0.2.106 support"
           cargo install --git https://github.com/cloudflare/workers-rs --force worker-build
           worker-build --version || echo "worker-build version command not available"
+
+      - name: Clean build artifacts
+        run: |
+          cargo clean
+          rm -rf build/ || true
 
       - name: Build WASM
         run: |
@@ -75,8 +77,7 @@ jobs:
           # Validate each WASM file
           for wasm_file in $WASM_FILES; do
             echo ""
-            echo "--- Validating $wasm_file ---
-"
+            echo "--- Validating $wasm_file ---"
             
             # Check file exists and has content
             if [ ! -s "$wasm_file" ]; then
