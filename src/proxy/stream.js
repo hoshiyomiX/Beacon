@@ -163,6 +163,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
+        // CONNECT TO TARGET, NOT PROXY (Nautica pattern)
         await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
         return;
       }
@@ -174,6 +175,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
+        // CONNECT TO TARGET, NOT PROXY (Nautica pattern)
         await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
         return;
       } catch (e) {
@@ -188,6 +190,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
+        // CONNECT TO TARGET, NOT PROXY (Nautica pattern)
         await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
         return;
       }
@@ -198,6 +201,7 @@ export class ProxyStream {
       const header = await this.protocol.handleHandshake(data);
       this.addressLog = header.addressRemote;
       this.portLog = header.portRemote;
+      // CONNECT TO TARGET, NOT PROXY (Nautica pattern)
       await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
@@ -207,10 +211,11 @@ export class ProxyStream {
 
   /**
    * Connect to remote and write initial data (Nautica pattern)
+   * CRITICAL: Connect directly to target address:port, NOT proxy server!
    */
   async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
     try {
-      console.log(`[DEBUG] Connecting to ${address}:${port}`);
+      console.log(`[DEBUG] Connecting directly to target: ${address}:${port}`);
       
       const tcpSocket = connect({
         hostname: address,
@@ -230,20 +235,20 @@ export class ProxyStream {
       this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
-      console.error(`[ERROR] Connection failed:`, error.message);
+      console.error(`[ERROR] Connection to ${address}:${port} failed:`, error.message);
       this.webSocket.close(1002, `Connection failed: ${error.message}`);
     }
   }
 
   /**
    * Pipe remote socket to WebSocket (Nautica pattern)
-   * FIXED: Capture this context for use in WritableStream
+   * FIXED f55692c: Capture 'this' context for use in WritableStream
    */
   async remoteSocketToWS(remoteSocket, responseHeader) {
     let header = responseHeader;
     let hasIncomingData = false;
     
-    // Capture references to avoid 'this' binding issues
+    // CRITICAL FIX: Capture references to avoid 'this' binding issues in WritableStream
     const webSocket = this.webSocket;
     const protocol = this.protocol;
     const log = this.log.bind(this);
@@ -268,6 +273,7 @@ export class ProxyStream {
               decrypted = await protocol.decrypt(chunk);
             }
             
+            // Send to WebSocket (exactly as Nautica does)
             if (header) {
               webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
               header = null;
