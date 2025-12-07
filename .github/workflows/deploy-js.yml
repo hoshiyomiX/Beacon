@@ -17,6 +17,7 @@ on:
   # Auto-deploy on push to js-migration
   push:
     branches:
+      - master
       - js-migration
     paths-ignore:
       - 'README.md'
