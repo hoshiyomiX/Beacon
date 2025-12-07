@@ -1,0 +1,27 @@
+name: Test Deployment
+
+# This simple workflow will trigger immediately and enable the Actions UI
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - js-migration
+    paths:
+      - '.github/workflows/test-deploy.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Test workflow
+        run: |
+          echo "✅ Workflow is working!"
+          echo "Now you can manually trigger 'Deploy JavaScript to Cloudflare Workers'"
+          echo ""
+          echo "To deploy:"
+          echo "1. Go to Actions tab"
+          echo "2. Select 'Deploy JavaScript to Cloudflare Workers'"
+          echo "3. Click 'Run workflow'"
