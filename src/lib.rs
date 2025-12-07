@@ -2,6 +2,7 @@ mod common;
 mod config;
 mod proxy;
 
+use crate::common::error::is_benign_error;
 use crate::config::Config;
 use crate::proxy::*;
 
@@ -14,28 +15,6 @@ use regex::Regex;
 // Regex compilation at initialization - only fails at compile time, safe to unwrap
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
-
-/// Check if an error is benign (expected during normal operation)
-fn is_benign_error(error_msg: &str) -> bool {
-    let error_lower = error_msg.to_lowercase();
-    error_lower.contains("writablestream has been closed")
-        || error_lower.contains("broken pipe")
-        || error_lower.contains("connection reset")
-        || error_lower.contains("connection closed")
-        || error_lower.contains("network connection lost")
-        || error_lower.contains("stream closed")
-        || error_lower.contains("eof")
-        || error_lower.contains("connection aborted")
-        || error_lower.contains("transfer error")
-        || error_lower.contains("canceled")
-        || error_lower.contains("cancelled")
-        || error_lower.contains("benign")
-        || error_lower.contains("not enough buffer")
-        || error_lower.contains("websocket")
-        || error_lower.contains("handshake")
-        || error_lower.contains("hung")
-        || error_lower.contains("never generate")
-}
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
