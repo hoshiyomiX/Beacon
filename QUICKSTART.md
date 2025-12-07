@@ -1,62 +1,95 @@
 # Quick Start Guide - Beacon JavaScript Edition
 
-## 🚀 Deploy in 3 Steps
+## 🚀 3 Ways to Deploy
 
-### Step 1: Setup GitHub Secret
+### Method 1: Auto-Deploy via Git Push (Recommended)
 
-1. Go to your repository on GitHub
-2. Navigate to **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret**
-4. Add:
-   - **Name**: `CLOUDFLARE_API_TOKEN`
-   - **Value**: Your Cloudflare API token
-   
-**Get Cloudflare API Token:**
-- Go to [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens)
-- Create Token → Use "Edit Cloudflare Workers" template
-- Copy the token
+**One-time setup:**
+1. Go to repository **Settings** → **Secrets and variables** → **Actions**
+2. Add secret: `CLOUDFLARE_API_TOKEN` (get from [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens))
 
-### Step 2: Push to Deploy
-
+**Deploy:**
 ```bash
-# Push to js-migration branch
+# Just push to js-migration branch
 git push origin js-migration
+
+# GitHub Actions will automatically deploy!
 ```
 
-That's it! GitHub Actions will automatically:
+### Method 2: Manual Script (Simple & Fast)
+
+```bash
+# Make script executable (first time only)
+chmod +x deploy.sh
+
+# Run deployment
+./deploy.sh
+```
+
+The script will:
+- ✅ Check Node.js installation
+- ✅ Install dependencies
 - ✅ Validate JavaScript syntax
 - ✅ Check bundle size
 - ✅ Deploy to Cloudflare Workers
 
-### Step 3: Verify Deployment
+### Method 3: Direct npm Command
 
-1. Go to **Actions** tab in your repository
-2. Watch the deployment progress
-3. Once complete, your worker is live at all configured routes!
+```bash
+# Install dependencies (first time only)
+npm install
+
+# Deploy
+npm run deploy
+```
 
 ---
 
-## 🛠️ Local Development (Optional)
-
-### Prerequisites
-- Node.js 18 or higher
-- npm or yarn
-
-### Setup
+## 🔧 Local Development
 
 ```bash
-# Clone and checkout
-git checkout js-migration
-
 # Install dependencies
 npm install
 
 # Run locally
 npm run dev
 
-# Deploy manually
-npm run deploy
+# Test at http://localhost:8787
 ```
+
+---
+
+## ⚠️ GitHub Actions "Run Workflow" Button Not Visible?
+
+**Why this happens:**
+GitHub only shows the "Run workflow" button for workflows on the **default branch** (usually `master` or `main`).
+
+**Solution 1: Use Git Push (Easiest)**
+```bash
+# Any push to js-migration triggers deployment
+git commit --allow-empty -m "Trigger deployment"
+git push origin js-migration
+```
+
+**Solution 2: Use deploy.sh Script**
+```bash
+./deploy.sh
+```
+
+**Solution 3: Merge to Default Branch**
+```bash
+# If you want the workflow visible in UI
+git checkout master
+git merge js-migration
+git push origin master
+
+# Then the "Run workflow" button will appear
+```
+
+**Solution 4: View Workflow from js-migration Branch**
+1. Go to: `https://github.com/hoshiyomiX/Beacon/actions/workflows/deploy-js.yml`
+2. Switch branch selector to `js-migration`
+3. Click "Run workflow" (should now be visible)
 
 ---
 
@@ -72,35 +105,25 @@ main = "src/index.js"  # JavaScript entry point
 # Your authentication UUID
 UUID = "38425afe-8466-4876-8223-f3d604ca3c18"
 
-# Page URLs (GitHub raw or your hosting)
+# Page URLs
 MAIN_PAGE_URL = "https://raw.githubusercontent.com/..."
-SUB_PAGE_URL  = "https://raw.githubusercontent.com/..."
 
 # Proxy list (country codes to IP:port mappings)
 PROXY_LIST = '{"HK":[...], "SG":[...]}'
 ```
 
-### Update Proxies
+### Update Configuration
 
-1. Edit `PROXY_LIST` in `wrangler.toml`
-2. Commit and push to `js-migration`
-3. Auto-deployment will update your worker
-
----
-
-## 🔍 Manual Deployment Trigger
-
-**Via GitHub UI:**
-1. Go to **Actions** tab
-2. Select "Deploy JavaScript to Cloudflare Workers"
-3. Click **Run workflow**
-4. Select `js-migration` branch
-5. Click **Run workflow** button
-
-**Via CLI:**
 ```bash
-# Using GitHub CLI
-gh workflow run deploy-js.yml --ref js-migration
+# Edit wrangler.toml
+nano wrangler.toml  # or use your preferred editor
+
+# Deploy changes
+./deploy.sh
+# or
+git add wrangler.toml
+git commit -m "Update configuration"
+git push origin js-migration
 ```
 
 ---
@@ -111,102 +134,141 @@ gh workflow run deploy-js.yml --ref js-migration
 ```bash
 npm run tail
 # or
-wrangler tail
+npx wrangler tail
 ```
 
 ### Check Deployment Status
-- GitHub: **Actions** tab → Latest workflow run
-- Cloudflare: Dashboard → Workers & Pages → beacon
+```bash
+# List recent deployments
+npx wrangler deployments list
+
+# View worker details
+npx wrangler status
+```
+
+### Check from GitHub
+- Go to **Actions** tab
+- View latest workflow runs
+- Check deployment logs
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Deployment Failed
-
-**Check GitHub Actions logs:**
-1. Go to Actions tab
-2. Click on failed workflow
-3. Check which step failed
-
-**Common issues:**
-
-| Error | Solution |
-|-------|----------|
-| "Invalid syntax" | Run `node --check src/index.js` locally |
-| "Missing CLOUDFLARE_API_TOKEN" | Add secret in repo settings |
-| "Bundle too large" | Remove unused code or split modules |
-| "Invalid wrangler.toml" | Verify `main = "src/index.js"` |
-
-### Worker Not Responding
-
+### "No module found" Error
 ```bash
-# Check worker status
-wrangler tail
-
-# View deployment info
-wrangler deployments list
-
-# View worker details
-wrangler status
+# Reinstall dependencies
+rm -rf node_modules package-lock.json
+npm install
 ```
 
-### Rollback to Rust Version
+### "Syntax error" in Deployment
+```bash
+# Check syntax locally
+node --check src/index.js
+node --check src/proxy/*.js
+
+# Or use the deploy script which validates automatically
+./deploy.sh
+```
+
+### "API Token Invalid"
+```bash
+# Check your token has Workers edit permissions
+# Create new token at: https://dash.cloudflare.com/profile/api-tokens
+# Use "Edit Cloudflare Workers" template
+```
+
+### "Bundle too large"
+```bash
+# Check current size
+find src -name "*.js" -exec wc -c {} + | awk '{sum+=$1} END {print sum/1024 " KB"}'
+
+# JavaScript version should be ~50-100KB
+# If larger, check for unnecessary dependencies
+```
+
+### Deployment Stuck/Failed
+```bash
+# Try manual deployment
+./deploy.sh
+
+# Or direct wrangler command
+npx wrangler deploy --verbose
+```
+
+---
+
+## 🔄 Rollback to Rust/WASM
+
+If you need to go back to the Rust version:
 
 ```bash
-# Switch to Rust/WASM version
+# Switch to Rust branch
 git checkout checkpoint
 
-# Deploy manually
+# Deploy Rust version
 wrangler deploy
 
-# Or push to master for auto-deployment
+# Or push to master to trigger Rust workflow
 git push origin checkpoint:master
 ```
 
 ---
 
-## ✨ Features
+## ✨ Quick Commands Reference
 
-### ✅ What Works
+```bash
+# Deploy (multiple options)
+./deploy.sh                    # Using script
+npm run deploy                 # Using npm
+git push origin js-migration   # Auto-deploy via GitHub
+
+# Development
+npm run dev                    # Run locally
+npm run tail                   # View live logs
+
+# Validation
+node --check src/index.js      # Check syntax
+npx wrangler validate          # Validate config
+
+# Monitoring
+npx wrangler deployments list  # List deployments
+npx wrangler tail              # Live logs
+npx wrangler status            # Worker status
+```
+
+---
+
+## 🎯 Features
+
+### ✅ Working
 - VLESS protocol (full support)
 - Trojan protocol (basic support)
 - Country-based proxy selection
 - Multiple custom domains
 - WebSocket tunneling
-- Auto-deployment via GitHub Actions
+- Multiple deployment methods
 
 ### ⚠️ Limitations
-- VMess: Stub only (needs crypto implementation)
+- VMess: Stub only (needs crypto)
 - Shadowsocks: Stub only (needs AEAD)
 
 ---
 
 ## 📚 Learn More
 
-- **Full Documentation**: See [MIGRATION.md](MIGRATION.md)
-- **Original Rust Version**: `checkpoint` branch
-- **Cloudflare Workers Docs**: https://developers.cloudflare.com/workers/
+- **Full Documentation**: [MIGRATION.md](MIGRATION.md)
+- **Original Version**: `checkpoint` branch
+- **Cloudflare Docs**: https://developers.cloudflare.com/workers/
 
 ---
 
-## 👥 Support
+## 🎉 You're All Set!
 
-If you encounter issues:
+**Fastest way to deploy right now:**
+```bash
+./deploy.sh
+```
 
-1. Check [MIGRATION.md](MIGRATION.md) for detailed info
-2. Review GitHub Actions logs
-3. Check Cloudflare dashboard for worker status
-4. Create an issue in the repository
-
----
-
-## 🎉 Success!
-
-Once deployed, your Beacon proxy is running with:
-- ⚡ 90% faster cold starts
-- 📦 80% smaller bundle size
-- 🔧 Easier debugging
-- 🚀 Automatic deployments
-
-Enjoy your JavaScript-powered Cloudflare Workers proxy! 🎉
+Your Beacon proxy will be live in ~30 seconds! 🚀
