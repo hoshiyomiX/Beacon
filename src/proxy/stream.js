@@ -14,7 +14,10 @@ export class ProxyStream {
     this.config = config;
     this.webSocket = webSocket;
     this.remoteSocket = null;
+    this.remoteReader = null;
+    this.remoteWriter = null;
     this.protocol = null;
+    this.isClosing = false;
     console.log('[DEBUG] ProxyStream created');
   }
 
@@ -164,9 +167,9 @@ export class ProxyStream {
       console.log('[DEBUG] Got writable stream writer');
       
       // Read from remote and send to client
-      const reader = socket.readable.getReader();
+      this.remoteReader = socket.readable.getReader();
       console.log('[DEBUG] Got readable stream reader, starting read loop');
-      this.readFromRemote(reader);
+      this.readFromRemote();
       
       console.log(`[DEBUG] Successfully connected to ${proxyAddr}:${proxyPort}`);
       
@@ -186,11 +189,11 @@ export class ProxyStream {
   /**
    * Read data from remote socket and forward to client
    */
-  async readFromRemote(reader) {
+  async readFromRemote() {
     try {
       let bytesRead = 0;
-      while (true) {
-        const { done, value } = await reader.read();
+      while (!this.isClosing) {
+        const { done, value } = await this.remoteReader.read();
         
         if (done) {
           console.log(`[DEBUG] Remote stream closed. Total bytes read: ${bytesRead}`);
@@ -208,7 +211,7 @@ export class ProxyStream {
         }
 
         // Send to client WebSocket
-        if (this.webSocket.readyState === 1) { // OPEN
+        if (this.webSocket.readyState === 1 && !this.isClosing) { // OPEN
           this.webSocket.send(decrypted);
           console.log(`[DEBUG] Sent ${decrypted.length} bytes to client`);
         } else {
@@ -231,8 +234,8 @@ export class ProxyStream {
    */
   async forwardToRemote(data) {
     try {
-      if (!this.remoteWriter) {
-        console.error('[ERROR] Remote writer not ready');
+      if (!this.remoteWriter || this.isClosing) {
+        console.error('[ERROR] Remote writer not ready or closing');
         return;
       }
 
@@ -257,13 +260,27 @@ export class ProxyStream {
    * Clean up connections
    */
   cleanup() {
+    if (this.isClosing) {
+      return; // Already cleaning up
+    }
+    
+    this.isClosing = true;
     console.log('[DEBUG] Cleaning up connections');
+    
     try {
+      // Cancel the reader first to stop the read loop
+      if (this.remoteReader) {
+        this.remoteReader.cancel().catch(() => {});
+        this.remoteReader = null;
+        console.log('[DEBUG] Cancelled remote reader');
+      }
+      
       if (this.remoteWriter) {
         this.remoteWriter.close().catch(() => {});
         this.remoteWriter = null;
         console.log('[DEBUG] Closed remote writer');
       }
+      
       if (this.remoteSocket) {
         this.remoteSocket.close().catch(() => {});
         this.remoteSocket = null;
@@ -284,6 +301,7 @@ export class ProxyStream {
       errorLower.includes('connection reset') ||
       errorLower.includes('connection closed') ||
       errorLower.includes('stream closed') ||
+      errorLower.includes('cancelled') ||
       errorLower.includes('websocket');
   }
 }
