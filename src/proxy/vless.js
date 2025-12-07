@@ -7,7 +7,6 @@ export class VlessHandler {
   constructor(config, webSocket) {
     this.config = config;
     this.webSocket = webSocket;
-    this.hasResponse = false;
   }
 
   /**
@@ -70,8 +69,6 @@ export class VlessHandler {
 
     console.log(`[DEBUG] VLESS: ${address}:${port}, command: ${command}`);
 
-    this.hasResponse = true;
-
     // Return header info for stream.js
     // IMPORTANT: Send the ENTIRE buffer to proxy server so it can parse the protocol
     return {
@@ -91,22 +88,13 @@ export class VlessHandler {
 
   /**
    * VLESS doesn't decrypt - just pass through
+   * 
+   * CRITICAL: The proxy server handles VLESS protocol negotiation.
+   * Data coming back from the proxy is ALREADY DECRYPTED and is raw HTTP/HTTPS response.
+   * DO NOT add VLESS response headers - that corrupts the actual data!
    */
   async decrypt(data) {
-    if (!this.hasResponse) {
-      // First response should include VLESS header: [version(1)] [addon_length(1)] [addons...]
-      const response = new Uint8Array(2);
-      response[0] = 0; // version
-      response[1] = 0; // no addons
-      
-      this.hasResponse = true;
-      
-      // Combine response header with actual data
-      const combined = new Uint8Array(response.length + data.length);
-      combined.set(response, 0);
-      combined.set(data, response.length);
-      return combined;
-    }
+    // Just pass through - proxy server already handled VLESS protocol
     return data;
   }
 
