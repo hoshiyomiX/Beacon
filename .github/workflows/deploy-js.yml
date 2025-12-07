@@ -16,7 +16,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: cf
+    # Removed environment requirement - add back if you have 'cf' environment configured
+    # environment: cf
     
     steps:
       - name: Checkout repository
