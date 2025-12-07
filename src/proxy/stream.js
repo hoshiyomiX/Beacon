@@ -163,7 +163,8 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, header.version);
+        // FIXED: Connect to PROXY server, not target
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, header.version);
         return;
       }
 
@@ -174,7 +175,8 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, header.version);
+        // FIXED: Connect to PROXY server, not target
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, header.version);
         return;
       } catch (e) {
         console.log('[DEBUG] Not VMess');
@@ -188,7 +190,8 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, null);
+        // FIXED: Connect to PROXY server, not target
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, null);
         return;
       }
 
@@ -198,7 +201,8 @@ export class ProxyStream {
       const header = await this.protocol.handleHandshake(data);
       this.addressLog = header.addressRemote;
       this.portLog = header.portRemote;
-      await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, null);
+      // FIXED: Connect to PROXY server, not target
+      await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, null);
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
       this.webSocket.close(1002, 'Protocol error');
@@ -206,11 +210,13 @@ export class ProxyStream {
   }
 
   /**
-   * Connect to remote and write initial data (Nautica pattern)
+   * Connect to PROXY server and write initial data (Nautica pattern)
+   * NOTE: We connect to the proxy server (config.proxyAddr), not the target!
    */
   async connectAndWrite(address, port, rawClientData, responseHeader) {
     try {
-      console.log(`[DEBUG] Connecting to ${address}:${port}`);
+      console.log(`[DEBUG] Connecting to PROXY server: ${address}:${port}`);
+      console.log(`[DEBUG] Target will be: ${this.addressLog}:${this.portLog}`);
       
       const tcpSocket = connect({
         hostname: address,
@@ -218,18 +224,19 @@ export class ProxyStream {
       });
       
       this.remoteSocketWrapper.value = tcpSocket;
-      this.log(`connected to ${address}:${port}`);
+      this.log(`connected to proxy server ${address}:${port}`);
       
-      // Write initial data
+      // Write initial data (contains target info from protocol)
       const writer = tcpSocket.writable.getWriter();
       await writer.write(rawClientData);
       writer.releaseLock();
+      console.log(`[DEBUG] Sent ${rawClientData.length} bytes to proxy server`);
 
       // Pipe remote socket to WebSocket (Nautica pattern)
       this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
-      console.error(`[ERROR] Connection failed:`, error.message);
+      console.error(`[ERROR] Connection to proxy failed:`, error.message);
       this.webSocket.close(1002, `Connection failed: ${error.message}`);
     }
   }
@@ -310,7 +317,7 @@ export class ProxyStream {
       await writer.write(encrypted);
       writer.releaseLock();
       
-      console.log(`[DEBUG] Forwarded ${encrypted.length} bytes to remote`);
+      console.log(`[DEBUG] Forwarded ${encrypted.length} bytes to proxy`);
     } catch (error) {
       if (!this.isBenignError(error.message)) {
         console.error('[ERROR] Remote write failed:', error.message);
