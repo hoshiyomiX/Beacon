@@ -124,13 +124,24 @@ export class ProxyStream {
   }
 
   /**
-   * Connect to remote proxy server
+   * Connect to remote proxy server using Cloudflare Workers Socket API
+   * Requires compatibility_date >= 2021-11-03 and proper network configuration
    */
   async connectRemote() {
     try {
       const { proxyAddr, proxyPort } = this.config;
       
-      // Use Cloudflare Workers TCP socket API
+      console.log(`[DEBUG] Connecting to ${proxyAddr}:${proxyPort}`);
+      
+      // FIXED: Use Cloudflare Workers Socket API (available in Workers with TCP enabled)
+      // The connect() function is available globally in Workers runtime
+      // Docs: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
+      
+      // Check if connect is available (newer Workers runtime)
+      if (typeof connect === 'undefined') {
+        throw new Error('TCP Socket API not available. Enable in wrangler.toml with compatibility_flags = ["nodejs_compat"]');
+      }
+      
       const socket = connect({
         hostname: proxyAddr,
         port: proxyPort
@@ -138,15 +149,21 @@ export class ProxyStream {
 
       this.remoteSocket = socket;
 
+      // Get writer for sending data
+      this.remoteWriter = socket.writable.getWriter();
+      
       // Read from remote and send to client
       const reader = socket.readable.getReader();
       this.readFromRemote(reader);
-
-      // Get writer for sending data
-      this.remoteWriter = socket.writable.getWriter();
+      
     } catch (error) {
       console.error('[ERROR] Remote connection failed:', error.message);
-      this.webSocket.close(1002, 'Connection failed');
+      console.error('[ERROR] Stack:', error.stack);
+      
+      // Send error to client
+      if (this.webSocket.readyState === 1) { // OPEN
+        this.webSocket.close(1002, `Connection failed: ${error.message}`);
+      }
     }
   }
 
@@ -159,6 +176,7 @@ export class ProxyStream {
         const { done, value } = await reader.read();
         
         if (done) {
+          console.log('[DEBUG] Remote stream closed');
           break;
         }
 
@@ -169,9 +187,10 @@ export class ProxyStream {
         }
 
         // Send to client WebSocket
-        if (this.webSocket.readyState === WebSocket.OPEN) {
+        if (this.webSocket.readyState === 1) { // OPEN
           this.webSocket.send(decrypted);
         } else {
+          console.log('[DEBUG] WebSocket not open, stopping read');
           break;
         }
       }
