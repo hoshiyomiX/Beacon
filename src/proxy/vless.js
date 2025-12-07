@@ -11,7 +11,7 @@ export class VlessHandler {
   }
 
   /**
-   * Handle VLESS handshake
+   * Handle VLESS handshake and return header info
    */
   async handleHandshake(data) {
     // VLESS protocol structure:
@@ -70,9 +70,15 @@ export class VlessHandler {
 
     console.log(`[DEBUG] VLESS: ${address}:${port}, command: ${command}`);
 
-    // For proxy mode, we don't actually use the target address
-    // The data will be forwarded to the configured proxy
     this.hasResponse = true;
+
+    // Return header info for stream.js
+    return {
+      addressRemote: address,
+      portRemote: port,
+      rawClientData: data.slice(offset), // Data after protocol header
+      version: new Uint8Array([0, 0]), // VLESS response header
+    };
   }
 
   /**
