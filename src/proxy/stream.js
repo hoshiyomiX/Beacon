@@ -274,11 +274,27 @@ export class ProxyStream {
               decrypted = await protocol.decrypt(chunk);
             }
             
+            // FIXED: Ensure we always send ArrayBuffer to WebSocket
+            // WebSocket.send() requires ArrayBuffer for binary data
+            let bufferToSend;
+            if (decrypted instanceof ArrayBuffer) {
+              bufferToSend = decrypted;
+            } else if (decrypted instanceof Uint8Array) {
+              // Convert Uint8Array to ArrayBuffer properly
+              bufferToSend = decrypted.buffer.slice(
+                decrypted.byteOffset,
+                decrypted.byteOffset + decrypted.byteLength
+              );
+            } else {
+              // Fallback: convert to Uint8Array then to ArrayBuffer
+              bufferToSend = new Uint8Array(decrypted).buffer;
+            }
+            
             if (header) {
-              webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
+              webSocket.send(await new Blob([header, bufferToSend]).arrayBuffer());
               header = null;
             } else {
-              webSocket.send(decrypted);
+              webSocket.send(bufferToSend);
             }
           },
           close() {
