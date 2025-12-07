@@ -5,7 +5,6 @@ use std::task::{Context, Poll};
 use bytes::{BufMut, BytesMut};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
-use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
@@ -80,6 +79,26 @@ fn is_warning_error(error_msg: &str) -> bool {
     error_lower.contains("backpressure")
         || error_lower.contains("buffer full")
         || error_lower.contains("max iterations")
+}
+
+/// Lightweight byte formatter for transfer statistics
+/// Replaces the pretty-bytes crate to reduce binary size
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    
+    let bytes_f64 = bytes as f64;
+    
+    if bytes_f64 >= GB {
+        format!("{:.2} GB", bytes_f64 / GB)
+    } else if bytes_f64 >= MB {
+        format!("{:.2} MB", bytes_f64 / MB)
+    } else if bytes_f64 >= KB {
+        format!("{:.2} KB", bytes_f64 / KB)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 /// WASM-compatible bidirectional copy with 8s timeout for free tier
@@ -403,7 +422,7 @@ impl<'a> ProxyStream<'a> {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
                     console_log!("[STATS] Transfer from {}:{} completed - up: {} / dl: {}", 
-                        &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
+                        &addr, &port, format_bytes(a_to_b), format_bytes(b_to_a));
                 }
                 Ok(())
             },
