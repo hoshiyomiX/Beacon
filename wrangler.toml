@@ -1,6 +1,10 @@
 name = "beacon"
 main = "src/index.js"
 compatibility_date = "2024-11-30"
+
+# Enable Node.js compatibility for TCP socket support (connect API)
+compatibility_flags = [ "nodejs_compat" ]
+
 minify = true
 workers_dev = true
 
