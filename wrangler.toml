@@ -1,5 +1,5 @@
 name = "beacon"
-main = "build/worker/shim.mjs"
+main = "src/index.js"
 compatibility_date = "2024-11-30"
 minify = true
 workers_dev = true

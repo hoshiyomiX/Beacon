@@ -1,0 +1,18 @@
+{
+  "name": "beacon",
+  "version": "0.1.0",
+  "description": "Cloudflare Workers proxy - JavaScript version",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": ["cloudflare", "workers", "proxy"],
+  "author": "hoshiyomiX",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "dependencies": {}
+}
