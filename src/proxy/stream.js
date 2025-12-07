@@ -164,7 +164,7 @@ export class ProxyStream {
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
         // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, header.version);
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, header.version);
         return;
       }
 
@@ -176,7 +176,7 @@ export class ProxyStream {
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
         // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, header.version);
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, header.version);
         return;
       } catch (e) {
         console.log('[DEBUG] Not VMess');
@@ -191,7 +191,7 @@ export class ProxyStream {
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
         // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, null);
+        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, null);
         return;
       }
 
@@ -202,7 +202,7 @@ export class ProxyStream {
       this.addressLog = header.addressRemote;
       this.portLog = header.portRemote;
       // FIXED: Connect to PROXY server, not target
-      await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawClientData, null);
+      await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, null);
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
       this.webSocket.close(1002, 'Protocol error');
@@ -213,7 +213,7 @@ export class ProxyStream {
    * Connect to PROXY server and write initial data (Nautica pattern)
    * NOTE: We connect to the proxy server (config.proxyAddr), not the target!
    */
-  async connectAndWrite(address, port, rawClientData, responseHeader) {
+  async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
     try {
       console.log(`[DEBUG] Connecting to PROXY server: ${address}:${port}`);
       console.log(`[DEBUG] Target will be: ${this.addressLog}:${this.portLog}`);
@@ -226,11 +226,11 @@ export class ProxyStream {
       this.remoteSocketWrapper.value = tcpSocket;
       this.log(`connected to proxy server ${address}:${port}`);
       
-      // Write initial data (contains target info from protocol)
+      // Write only data AFTER protocol header
       const writer = tcpSocket.writable.getWriter();
-      await writer.write(rawClientData);
+      await writer.write(rawDataAfterHandshake);
       writer.releaseLock();
-      console.log(`[DEBUG] Sent ${rawClientData.length} bytes to proxy server`);
+      console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes to proxy server`);
 
       // Pipe remote socket to WebSocket (Nautica pattern)
       this.remoteSocketToWS(tcpSocket, responseHeader);
