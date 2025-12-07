@@ -1,6 +1,8 @@
 /**
  * ProxyStream - Handles WebSocket proxy connections
  * Supports multiple protocols: VLESS, VMess, Trojan, Shadowsocks
+ * 
+ * Based on FoolVPN-ID/Nautica implementation pattern
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -9,51 +11,53 @@ import { VmessHandler } from './vmess';
 import { TrojanHandler } from './trojan';
 import { ShadowsocksHandler } from './shadowsocks';
 
+const WS_READY_STATE_OPEN = 1;
+const WS_READY_STATE_CLOSING = 2;
+
 export class ProxyStream {
   constructor(config, webSocket) {
     this.config = config;
     this.webSocket = webSocket;
-    this.remoteSocket = null;
-    this.remoteReader = null;
-    this.remoteWriter = null;
+    this.remoteSocketWrapper = { value: null };
     this.protocol = null;
-    this.isClosing = false;
+    this.addressLog = '';
+    this.portLog = '';
     console.log('[DEBUG] ProxyStream created');
   }
 
+  log(info, event) {
+    console.log(`[${this.addressLog}:${this.portLog}] ${info}`, event || '');
+  }
+
   /**
-   * Process the proxy stream
+   * Process the proxy stream using ReadableStream pattern
    */
   async process() {
     try {
       console.log('[DEBUG] Starting proxy stream processing');
       
-      // Listen for messages from the client
-      this.webSocket.addEventListener('message', async (event) => {
-        try {
-          console.log(`[DEBUG] Received message, size: ${event.data?.byteLength || event.data?.length || 0} bytes`);
-          await this.handleMessage(event.data);
-        } catch (error) {
-          if (!this.isBenignError(error.message)) {
-            console.error('[ERROR] Message handling failed:', error.message);
-            console.error('[ERROR] Stack:', error.stack);
+      const readableWebSocketStream = this.makeReadableWebSocketStream();
+
+      // Pipe WebSocket data through WritableStream processor
+      readableWebSocketStream
+        .pipeTo(
+          new WritableStream({
+            write: async (chunk, controller) => {
+              await this.handleChunk(chunk, controller);
+            },
+            close: () => {
+              this.log('readableWebSocketStream is closed');
+            },
+            abort: (reason) => {
+              this.log('readableWebSocketStream is aborted', JSON.stringify(reason));
+            },
+          })
+        )
+        .catch((err) => {
+          if (!this.isBenignError(err.message || err.toString())) {
+            this.log('readableWebSocketStream pipeTo error', err);
           }
-        }
-      });
-
-      // Listen for close events
-      this.webSocket.addEventListener('close', (event) => {
-        console.log(`[DEBUG] WebSocket closed: code=${event.code}, reason=${event.reason}`);
-        this.cleanup();
-      });
-
-      // Listen for error events
-      this.webSocket.addEventListener('error', (error) => {
-        if (!this.isBenignError(error.message || 'unknown')) {
-          console.error('[ERROR] WebSocket error:', error.message || error);
-        }
-        this.cleanup();
-      });
+        });
     } catch (error) {
       if (!this.isBenignError(error.message)) {
         console.error('[ERROR] Stream processing failed:', error.message);
@@ -64,169 +68,217 @@ export class ProxyStream {
   }
 
   /**
-   * Handle incoming messages from the client
+   * Create ReadableStream from WebSocket (Nautica pattern)
    */
-  async handleMessage(data) {
-    // Convert data to ArrayBuffer if needed
-    let buffer;
-    if (data instanceof ArrayBuffer) {
-      buffer = data;
-    } else if (data instanceof Blob) {
-      buffer = await data.arrayBuffer();
-    } else if (typeof data === 'string') {
-      const encoder = new TextEncoder();
-      buffer = encoder.encode(data).buffer;
-    } else {
-      console.error('[ERROR] Unexpected message type:', typeof data);
-      return;
-    }
+  makeReadableWebSocketStream() {
+    let readableStreamCancel = false;
+    
+    return new ReadableStream({
+      start: (controller) => {
+        this.webSocket.addEventListener('message', (event) => {
+          if (readableStreamCancel) {
+            return;
+          }
+          const message = event.data;
+          controller.enqueue(message);
+        });
 
-    const uint8Data = new Uint8Array(buffer);
-    console.log(`[DEBUG] Processing ${uint8Data.length} bytes, first byte: 0x${uint8Data[0]?.toString(16).padStart(2, '0')}`);
+        this.webSocket.addEventListener('close', () => {
+          this.safeCloseWebSocket();
+          if (readableStreamCancel) {
+            return;
+          }
+          controller.close();
+        });
 
-    // If protocol not yet determined, parse the first message
-    if (!this.protocol) {
-      console.log('[DEBUG] Determining protocol from first message');
-      await this.determineProtocol(uint8Data);
-    } else {
-      // Forward data to remote socket
-      console.log(`[DEBUG] Forwarding ${uint8Data.length} bytes to remote`);
-      await this.forwardToRemote(uint8Data);
+        this.webSocket.addEventListener('error', (err) => {
+          this.log('webSocket has error');
+          controller.error(err);
+        });
+      },
+
+      pull: (controller) => {
+        // Not needed for WebSocket
+      },
+
+      cancel: (reason) => {
+        if (readableStreamCancel) {
+          return;
+        }
+        this.log(`ReadableStream was canceled, due to ${reason}`);
+        readableStreamCancel = true;
+        this.safeCloseWebSocket();
+      },
+    });
+  }
+
+  /**
+   * Handle incoming data chunks
+   */
+  async handleChunk(chunk, controller) {
+    try {
+      // Convert to ArrayBuffer
+      let buffer;
+      if (chunk instanceof ArrayBuffer) {
+        buffer = chunk;
+      } else if (chunk instanceof Blob) {
+        buffer = await chunk.arrayBuffer();
+      } else if (typeof chunk === 'string') {
+        const encoder = new TextEncoder();
+        buffer = encoder.encode(chunk).buffer;
+      } else {
+        console.error('[ERROR] Unexpected chunk type:', typeof chunk);
+        return;
+      }
+
+      const uint8Data = new Uint8Array(buffer);
+      console.log(`[DEBUG] Processing ${uint8Data.length} bytes`);
+
+      // First message: determine protocol and connect
+      if (!this.remoteSocketWrapper.value) {
+        console.log('[DEBUG] First chunk, determining protocol');
+        await this.handleFirstMessage(uint8Data);
+      } else {
+        // Subsequent messages: forward to remote
+        await this.forwardToRemote(uint8Data);
+      }
+    } catch (error) {
+      if (!this.isBenignError(error.message)) {
+        console.error('[ERROR] Chunk handling failed:', error.message);
+      }
     }
   }
 
   /**
-   * Determine the protocol from the first message
+   * Handle first message to determine protocol and connect
    */
-  async determineProtocol(data) {
+  async handleFirstMessage(data) {
     try {
-      console.log(`[DEBUG] First byte: 0x${data[0]?.toString(16).padStart(2, '0')}, checking protocols...`);
+      console.log(`[DEBUG] First byte: 0x${data[0]?.toString(16).padStart(2, '0')}`);
       
       // Try VLESS first (version byte = 0)
       if (data[0] === 0) {
-        console.log('[DEBUG] Detected VLESS protocol (version byte = 0)');
+        console.log('[DEBUG] Detected VLESS protocol');
         this.protocol = new VlessHandler(this.config, this.webSocket);
-        await this.protocol.handleHandshake(data);
-        await this.connectRemote();
+        const header = await this.protocol.handleHandshake(data);
+        this.addressLog = header.addressRemote;
+        this.portLog = header.portRemote;
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, header.version);
         return;
       }
 
-      // Try VMess (authenticated data cipher)
+      // Try VMess
       try {
         console.log('[DEBUG] Trying VMess protocol');
         this.protocol = new VmessHandler(this.config, this.webSocket);
-        await this.protocol.handleHandshake(data);
-        await this.connectRemote();
+        const header = await this.protocol.handleHandshake(data);
+        this.addressLog = header.addressRemote;
+        this.portLog = header.portRemote;
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, header.version);
         return;
       } catch (e) {
-        console.log('[DEBUG] Not VMess, trying next protocol');
+        console.log('[DEBUG] Not VMess');
       }
 
-      // Try Trojan (hex string followed by \r\n)
+      // Try Trojan
       const dataStr = new TextDecoder().decode(data.slice(0, Math.min(60, data.length)));
       if (dataStr.includes('\r\n')) {
-        console.log('[DEBUG] Detected Trojan protocol (found CRLF)');
+        console.log('[DEBUG] Detected Trojan protocol');
         this.protocol = new TrojanHandler(this.config, this.webSocket);
-        await this.protocol.handleHandshake(data);
-        await this.connectRemote();
+        const header = await this.protocol.handleHandshake(data);
+        this.addressLog = header.addressRemote;
+        this.portLog = header.portRemote;
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, null);
         return;
       }
 
-      // Try Shadowsocks
-      console.log('[DEBUG] Trying Shadowsocks protocol');
+      // Default to Shadowsocks
+      console.log('[DEBUG] Defaulting to Shadowsocks');
       this.protocol = new ShadowsocksHandler(this.config, this.webSocket);
-      await this.protocol.handleHandshake(data);
-      await this.connectRemote();
+      const header = await this.protocol.handleHandshake(data);
+      this.addressLog = header.addressRemote;
+      this.portLog = header.portRemote;
+      await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawClientData, null);
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
-      console.error('[ERROR] Stack:', error.stack);
       this.webSocket.close(1002, 'Protocol error');
     }
   }
 
   /**
-   * Connect to remote proxy server using Cloudflare Workers Socket API
+   * Connect to remote and write initial data (Nautica pattern)
    */
-  async connectRemote() {
+  async connectAndWrite(address, port, rawClientData, responseHeader) {
     try {
-      const { proxyAddr, proxyPort } = this.config;
+      console.log(`[DEBUG] Connecting to ${address}:${port}`);
       
-      console.log(`[DEBUG] Initiating TCP connection to ${proxyAddr}:${proxyPort}`);
-      console.log(`[DEBUG] connect function available: ${typeof connect !== 'undefined'}`);
-      
-      const socket = connect({
-        hostname: proxyAddr,
-        port: proxyPort
+      const tcpSocket = connect({
+        hostname: address,
+        port: port,
       });
-
-      console.log('[DEBUG] TCP socket created successfully');
-      this.remoteSocket = socket;
-
-      // Get writer for sending data
-      this.remoteWriter = socket.writable.getWriter();
-      console.log('[DEBUG] Got writable stream writer');
       
-      // Read from remote and send to client
-      this.remoteReader = socket.readable.getReader();
-      console.log('[DEBUG] Got readable stream reader, starting read loop');
-      this.readFromRemote();
+      this.remoteSocketWrapper.value = tcpSocket;
+      this.log(`connected to ${address}:${port}`);
       
-      console.log(`[DEBUG] Successfully connected to ${proxyAddr}:${proxyPort}`);
+      // Write initial data
+      const writer = tcpSocket.writable.getWriter();
+      await writer.write(rawClientData);
+      writer.releaseLock();
+
+      // Pipe remote socket to WebSocket (Nautica pattern)
+      this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
-      console.error(`[ERROR] Remote connection to ${this.config.proxyAddr}:${this.config.proxyPort} failed:`, error.message);
-      console.error('[ERROR] Stack:', error.stack);
-      console.error('[ERROR] Error name:', error.name);
-      console.error('[ERROR] Error code:', error.code);
-      
-      // Send error to client
-      if (this.webSocket.readyState === 1) { // OPEN
-        this.webSocket.close(1002, `Connection failed: ${error.message}`);
-      }
+      console.error(`[ERROR] Connection failed:`, error.message);
+      this.webSocket.close(1002, `Connection failed: ${error.message}`);
     }
   }
 
   /**
-   * Read data from remote socket and forward to client
+   * Pipe remote socket to WebSocket (Nautica pattern)
    */
-  async readFromRemote() {
-    try {
-      let bytesRead = 0;
-      while (!this.isClosing) {
-        const { done, value } = await this.remoteReader.read();
-        
-        if (done) {
-          console.log(`[DEBUG] Remote stream closed. Total bytes read: ${bytesRead}`);
-          break;
+  async remoteSocketToWS(remoteSocket, responseHeader) {
+    let header = responseHeader;
+    let hasIncomingData = false;
+    
+    await remoteSocket.readable
+      .pipeTo(
+        new WritableStream({
+          start() {},
+          write: async (chunk, controller) => {
+            hasIncomingData = true;
+            
+            if (this.webSocket.readyState !== WS_READY_STATE_OPEN) {
+              controller.error('webSocket.readyState is not open, maybe closed');
+            }
+            
+            // Decrypt if needed
+            let decrypted = chunk;
+            if (this.protocol && this.protocol.decrypt) {
+              decrypted = await this.protocol.decrypt(chunk);
+            }
+            
+            if (header) {
+              this.webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
+              header = null;
+            } else {
+              this.webSocket.send(decrypted);
+            }
+          },
+          close: () => {
+            this.log(`remoteConnection readable is closed with hasIncomingData=${hasIncomingData}`);
+          },
+          abort: (reason) => {
+            console.error('remoteConnection readable abort', reason);
+          },
+        })
+      )
+      .catch((error) => {
+        if (!this.isBenignError(error.message || error.toString())) {
+          console.error('remoteSocketToWS has exception', error.stack || error);
         }
-
-        bytesRead += value.length;
-        console.log(`[DEBUG] Read ${value.length} bytes from remote (total: ${bytesRead})`);
-
-        // Decrypt if protocol requires it
-        let decrypted = value;
-        if (this.protocol && this.protocol.decrypt) {
-          decrypted = await this.protocol.decrypt(value);
-          console.log(`[DEBUG] Decrypted ${decrypted.length} bytes`);
-        }
-
-        // Send to client WebSocket
-        if (this.webSocket.readyState === 1 && !this.isClosing) { // OPEN
-          this.webSocket.send(decrypted);
-          console.log(`[DEBUG] Sent ${decrypted.length} bytes to client`);
-        } else {
-          console.log(`[DEBUG] WebSocket state: ${this.webSocket.readyState}, stopping read`);
-          break;
-        }
-      }
-    } catch (error) {
-      if (!this.isBenignError(error.message)) {
-        console.error('[ERROR] Remote read failed:', error.message);
-        console.error('[ERROR] Stack:', error.stack);
-      }
-    } finally {
-      this.cleanup();
-    }
+        this.safeCloseWebSocket();
+      });
   }
 
   /**
@@ -234,8 +286,8 @@ export class ProxyStream {
    */
   async forwardToRemote(data) {
     try {
-      if (!this.remoteWriter || this.isClosing) {
-        console.error('[ERROR] Remote writer not ready or closing');
+      if (!this.remoteSocketWrapper.value) {
+        console.error('[ERROR] Remote socket not ready');
         return;
       }
 
@@ -243,51 +295,33 @@ export class ProxyStream {
       let encrypted = data;
       if (this.protocol && this.protocol.encrypt) {
         encrypted = await this.protocol.encrypt(data);
-        console.log(`[DEBUG] Encrypted ${encrypted.length} bytes`);
       }
 
-      await this.remoteWriter.write(encrypted);
-      console.log(`[DEBUG] Wrote ${encrypted.length} bytes to remote`);
+      const writer = this.remoteSocketWrapper.value.writable.getWriter();
+      await writer.write(encrypted);
+      writer.releaseLock();
+      
+      console.log(`[DEBUG] Forwarded ${encrypted.length} bytes to remote`);
     } catch (error) {
       if (!this.isBenignError(error.message)) {
         console.error('[ERROR] Remote write failed:', error.message);
-        console.error('[ERROR] Stack:', error.stack);
       }
     }
   }
 
   /**
-   * Clean up connections
+   * Safe close WebSocket (Nautica pattern)
    */
-  cleanup() {
-    if (this.isClosing) {
-      return; // Already cleaning up
-    }
-    
-    this.isClosing = true;
-    console.log('[DEBUG] Cleaning up connections');
-    
+  safeCloseWebSocket() {
     try {
-      // Cancel the reader first to stop the read loop
-      if (this.remoteReader) {
-        this.remoteReader.cancel().catch(() => {});
-        this.remoteReader = null;
-        console.log('[DEBUG] Cancelled remote reader');
-      }
-      
-      if (this.remoteWriter) {
-        this.remoteWriter.close().catch(() => {});
-        this.remoteWriter = null;
-        console.log('[DEBUG] Closed remote writer');
-      }
-      
-      if (this.remoteSocket) {
-        this.remoteSocket.close().catch(() => {});
-        this.remoteSocket = null;
-        console.log('[DEBUG] Closed remote socket');
+      if (
+        this.webSocket.readyState === WS_READY_STATE_OPEN ||
+        this.webSocket.readyState === WS_READY_STATE_CLOSING
+      ) {
+        this.webSocket.close();
       }
     } catch (error) {
-      console.log('[DEBUG] Cleanup error (ignored):', error.message);
+      console.error('safeCloseWebSocket error', error);
     }
   }
 
@@ -296,12 +330,16 @@ export class ProxyStream {
    */
   isBenignError(errorMsg) {
     const errorLower = errorMsg.toLowerCase();
-    return errorLower.includes('writablestream has been closed') ||
+    return (
+      errorLower.includes('writablestream has been closed') ||
       errorLower.includes('broken pipe') ||
       errorLower.includes('connection reset') ||
       errorLower.includes('connection closed') ||
       errorLower.includes('stream closed') ||
       errorLower.includes('cancelled') ||
-      errorLower.includes('websocket');
+      errorLower.includes('canceled') ||
+      errorLower.includes('websocket') ||
+      errorLower.includes('not open')
+    );
   }
 }
