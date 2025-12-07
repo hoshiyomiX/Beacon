@@ -236,48 +236,57 @@ export class ProxyStream {
 
   /**
    * Pipe remote socket to WebSocket (Nautica pattern)
+   * FIXED: Capture this context for use in WritableStream
    */
   async remoteSocketToWS(remoteSocket, responseHeader) {
     let header = responseHeader;
     let hasIncomingData = false;
     
+    // Capture references to avoid 'this' binding issues
+    const webSocket = this.webSocket;
+    const protocol = this.protocol;
+    const log = this.log.bind(this);
+    const isBenignError = this.isBenignError.bind(this);
+    const safeCloseWebSocket = this.safeCloseWebSocket.bind(this);
+    
     await remoteSocket.readable
       .pipeTo(
         new WritableStream({
           start() {},
-          write: async (chunk, controller) => {
+          async write(chunk, controller) {
             hasIncomingData = true;
             
-            if (this.webSocket.readyState !== WS_READY_STATE_OPEN) {
+            if (webSocket.readyState !== WS_READY_STATE_OPEN) {
               controller.error('webSocket.readyState is not open, maybe closed');
+              return;
             }
             
             // Decrypt if needed
             let decrypted = chunk;
-            if (this.protocol && this.protocol.decrypt) {
-              decrypted = await this.protocol.decrypt(chunk);
+            if (protocol && protocol.decrypt) {
+              decrypted = await protocol.decrypt(chunk);
             }
             
             if (header) {
-              this.webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
+              webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
               header = null;
             } else {
-              this.webSocket.send(decrypted);
+              webSocket.send(decrypted);
             }
           },
-          close: () => {
-            this.log(`remoteConnection readable is closed with hasIncomingData=${hasIncomingData}`);
+          close() {
+            log(`remoteConnection readable is closed with hasIncomingData=${hasIncomingData}`);
           },
-          abort: (reason) => {
+          abort(reason) {
             console.error('remoteConnection readable abort', reason);
           },
         })
       )
       .catch((error) => {
-        if (!this.isBenignError(error.message || error.toString())) {
+        if (!isBenignError(error.message || error.toString())) {
           console.error('remoteSocketToWS has exception', error.stack || error);
         }
-        this.safeCloseWebSocket();
+        safeCloseWebSocket();
       });
   }
 
