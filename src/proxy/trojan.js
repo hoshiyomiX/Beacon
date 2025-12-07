@@ -62,18 +62,14 @@ export class TrojanHandler {
     }
     
     const port = (payload[addrOffset] << 8) | payload[addrOffset + 1];
-    addrOffset += 2;
     
     console.log(`[DEBUG] Trojan: ${address}:${port}, command=${command}`);
-    
-    // Find second CRLF to get raw data
-    const secondCrlfIndex = dataStr.indexOf('\r\n', crlfIndex + 2);
-    const rawDataOffset = secondCrlfIndex !== -1 ? secondCrlfIndex + 2 : offset + addrOffset;
 
+    // Return complete data to proxy server
     return {
       addressRemote: address,
       portRemote: port,
-      rawClientData: data.slice(rawDataOffset),
+      rawClientData: data, // Send COMPLETE data to proxy
       version: null,
     };
   }

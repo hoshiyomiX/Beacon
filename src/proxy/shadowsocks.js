@@ -54,10 +54,11 @@ export class ShadowsocksHandler {
     
     console.log(`[DEBUG] Shadowsocks: ${addressValue}:${portRemote}`);
 
+    // Return complete data to proxy server
     return {
       addressRemote: addressValue,
       portRemote: portRemote,
-      rawClientData: data.slice(portIndex + 2),
+      rawClientData: data, // Send COMPLETE data to proxy
       version: null,
     };
   }
