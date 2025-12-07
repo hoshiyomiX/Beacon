@@ -1,4 +1,5 @@
 use super::ProxyStream;
+use crate::common::error::is_benign_error;
 use crate::common::{
     hash, parse_port, parse_addr, KDFSALT_CONST_AEAD_RESP_HEADER_IV, KDFSALT_CONST_AEAD_RESP_HEADER_KEY, KDFSALT_CONST_AEAD_RESP_HEADER_LEN_IV, KDFSALT_CONST_AEAD_RESP_HEADER_LEN_KEY, KDFSALT_CONST_VMESS_HEADER_PAYLOAD_AEAD_IV, KDFSALT_CONST_VMESS_HEADER_PAYLOAD_AEAD_KEY, KDFSALT_CONST_VMESS_HEADER_PAYLOAD_LENGTH_AEAD_IV, KDFSALT_CONST_VMESS_HEADER_PAYLOAD_LENGTH_AEAD_KEY
 };
@@ -12,20 +13,6 @@ use md5::{Digest, Md5};
 use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use worker::*;
-
-/// Check if an error is benign (expected during normal operation)
-fn is_benign_error(error_msg: &str) -> bool {
-    let error_lower = error_msg.to_lowercase();
-    error_lower.contains("writablestream has been closed")
-        || error_lower.contains("broken pipe")
-        || error_lower.contains("connection reset")
-        || error_lower.contains("connection closed")
-        || error_lower.contains("network connection lost")
-        || error_lower.contains("stream closed")
-        || error_lower.contains("eof")
-        || error_lower.contains("connection aborted")
-        || error_lower.contains("transfer error")
-}
 
 impl <'a> ProxyStream<'a> {
     async fn aead_decrypt(&mut self) -> Result<Vec<u8>> {

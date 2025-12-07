@@ -1,3 +1,4 @@
+pub mod error;
 pub mod hash;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
