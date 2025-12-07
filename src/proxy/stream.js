@@ -163,8 +163,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, header.version);
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
         return;
       }
 
@@ -175,8 +174,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, header.version);
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
         return;
       } catch (e) {
         console.log('[DEBUG] Not VMess');
@@ -190,8 +188,7 @@ export class ProxyStream {
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
-        // FIXED: Connect to PROXY server, not target
-        await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, null);
+        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
         return;
       }
 
@@ -201,8 +198,7 @@ export class ProxyStream {
       const header = await this.protocol.handleHandshake(data);
       this.addressLog = header.addressRemote;
       this.portLog = header.portRemote;
-      // FIXED: Connect to PROXY server, not target
-      await this.connectAndWrite(this.config.proxyAddr, this.config.proxyPort, header.rawDataAfterHandshake, null);
+      await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
       this.webSocket.close(1002, 'Protocol error');
@@ -210,13 +206,11 @@ export class ProxyStream {
   }
 
   /**
-   * Connect to PROXY server and write initial data (Nautica pattern)
-   * NOTE: We connect to the proxy server (config.proxyAddr), not the target!
+   * Connect to remote and write initial data (Nautica pattern)
    */
   async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
     try {
-      console.log(`[DEBUG] Connecting to PROXY server: ${address}:${port}`);
-      console.log(`[DEBUG] Target will be: ${this.addressLog}:${this.portLog}`);
+      console.log(`[DEBUG] Connecting to ${address}:${port}`);
       
       const tcpSocket = connect({
         hostname: address,
@@ -224,19 +218,19 @@ export class ProxyStream {
       });
       
       this.remoteSocketWrapper.value = tcpSocket;
-      this.log(`connected to proxy server ${address}:${port}`);
+      this.log(`connected to ${address}:${port}`);
       
-      // Write only data AFTER protocol header
+      // Write initial data
       const writer = tcpSocket.writable.getWriter();
       await writer.write(rawDataAfterHandshake);
       writer.releaseLock();
-      console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes to proxy server`);
+      console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes`);
 
       // Pipe remote socket to WebSocket (Nautica pattern)
       this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
-      console.error(`[ERROR] Connection to proxy failed:`, error.message);
+      console.error(`[ERROR] Connection failed:`, error.message);
       this.webSocket.close(1002, `Connection failed: ${error.message}`);
     }
   }
@@ -274,27 +268,11 @@ export class ProxyStream {
               decrypted = await protocol.decrypt(chunk);
             }
             
-            // FIXED: Ensure we always send ArrayBuffer to WebSocket
-            // WebSocket.send() requires ArrayBuffer for binary data
-            let bufferToSend;
-            if (decrypted instanceof ArrayBuffer) {
-              bufferToSend = decrypted;
-            } else if (decrypted instanceof Uint8Array) {
-              // Convert Uint8Array to ArrayBuffer properly
-              bufferToSend = decrypted.buffer.slice(
-                decrypted.byteOffset,
-                decrypted.byteOffset + decrypted.byteLength
-              );
-            } else {
-              // Fallback: convert to Uint8Array then to ArrayBuffer
-              bufferToSend = new Uint8Array(decrypted).buffer;
-            }
-            
             if (header) {
-              webSocket.send(await new Blob([header, bufferToSend]).arrayBuffer());
+              webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
               header = null;
             } else {
-              webSocket.send(bufferToSend);
+              webSocket.send(decrypted);
             }
           },
           close() {
@@ -333,7 +311,7 @@ export class ProxyStream {
       await writer.write(encrypted);
       writer.releaseLock();
       
-      console.log(`[DEBUG] Forwarded ${encrypted.length} bytes to proxy`);
+      console.log(`[DEBUG] Forwarded ${encrypted.length} bytes`);
     } catch (error) {
       if (!this.isBenignError(error.message)) {
         console.error('[ERROR] Remote write failed:', error.message);
