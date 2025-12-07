@@ -65,10 +65,12 @@ const handlers = {
  * Main tunnel handler for proxy connections
  */
 async function handleTunnel(request, config, env, proxyipParam) {
+  console.log(`[DEBUG] handleTunnel called with proxyip: ${proxyipParam}`);
   let proxyip = proxyipParam;
 
   // Handle proxy selection from bundled list
   if (PROXYKV_PATTERN.test(proxyip)) {
+    console.log(`[DEBUG] Country code detected: ${proxyip}`);
     const kvidList = proxyip.split(',');
     
     // Get bundled proxy list from environment variables
@@ -87,6 +89,7 @@ async function handleTunnel(request, config, env, proxyipParam) {
       if (proxyList && proxyList.length > 0) {
         const proxyipIndex = randBytes[0] % proxyList.length;
         proxyip = proxyList[proxyipIndex].replace(':', '-');
+        console.log(`[DEBUG] Selected random proxy: ${proxyip}`);
       } else {
         console.error(`[ERROR] No proxies available for country: ${proxyip}`);
         return new Response('No proxies available for selected region', { status: 502 });
@@ -103,20 +106,40 @@ async function handleTunnel(request, config, env, proxyipParam) {
     if (parts.length === 2) {
       config.proxyAddr = parts[0];
       config.proxyPort = parseInt(parts[1], 10);
+      console.log(`[DEBUG] Parsed proxy: ${config.proxyAddr}:${config.proxyPort}`);
     }
   }
 
   // Check for WebSocket upgrade
   const upgrade = request.headers.get('Upgrade');
+  console.log(`[DEBUG] Upgrade header: ${upgrade}`);
+  console.log(`[DEBUG] All request headers:`, Object.fromEntries(request.headers));
   
   if (upgrade === 'websocket') {
+    console.log('[DEBUG] WebSocket upgrade detected, creating WebSocket pair');
     try {
       // Create WebSocket pair
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
       
+      console.log('[DEBUG] WebSocket pair created successfully');
+      
       // Accept the WebSocket connection
       server.accept();
+      console.log('[DEBUG] Server WebSocket accepted');
+      
+      // Add connection monitoring
+      server.addEventListener('open', () => {
+        console.log('[DEBUG] Server WebSocket OPEN event');
+      });
+      
+      server.addEventListener('close', (event) => {
+        console.log(`[DEBUG] Server WebSocket CLOSE event: code=${event.code}, reason=${event.reason}, wasClean=${event.wasClean}`);
+      });
+      
+      server.addEventListener('error', (event) => {
+        console.error('[ERROR] Server WebSocket ERROR event:', event);
+      });
       
       // Handle WebSocket proxy stream
       const proxyStream = new ProxyStream(config, server);
@@ -130,27 +153,31 @@ async function handleTunnel(request, config, env, proxyipParam) {
       Promise.race([processPromise, timeoutPromise])
         .then((result) => {
           if (result === 'timeout') {
-            console.log('[DEBUG] Connection timeout');
+            console.log('[DEBUG] Connection timeout (8 seconds)');
           }
           server.close(1000, 'Connection closed');
         })
         .catch((error) => {
           if (!isBenignError(error.message)) {
             console.error('[FATAL] Unexpected tunnel error:', error.message);
+            console.error('[FATAL] Stack:', error.stack);
           }
           server.close(1000, 'Connection closed');
         });
       
+      console.log('[DEBUG] Returning WebSocket upgrade response (101)');
       // Return the client WebSocket in the response
       return new Response(null, {
         status: 101,
         webSocket: client
       });
     } catch (error) {
-      console.log('[DEBUG] WebSocket response creation failed:', error.message);
+      console.error('[ERROR] WebSocket response creation failed:', error.message);
+      console.error('[ERROR] Stack:', error.stack);
       return new Response('WebSocket handshake failed', { status: 400 });
     }
   } else {
+    console.log('[DEBUG] No WebSocket upgrade, returning plain response');
     return new Response('hi from JavaScript!', {
       headers: { 'Content-Type': 'text/html' }
     });
@@ -163,6 +190,10 @@ async function handleTunnel(request, config, env, proxyipParam) {
 export default {
   async fetch(request, env, ctx) {
     try {
+      const url = new URL(request.url);
+      console.log(`[DEBUG] === New Request: ${request.method} ${url.pathname} ===`);
+      console.log(`[DEBUG] Host: ${url.hostname}`);
+      
       // Parse UUID
       const uuid = env.UUID;
       if (!uuid) {
@@ -176,7 +207,6 @@ export default {
         return new Response('Invalid server configuration: UUID', { status: 502 });
       }
       
-      const url = new URL(request.url);
       const host = url.hostname;
       
       // Get environment variables
@@ -207,6 +237,7 @@ export default {
       
       // Route the request
       const pathname = url.pathname;
+      console.log(`[DEBUG] Routing pathname: ${pathname}`);
       
       if (pathname === '/') {
         return handlers.fe(request, config);
@@ -222,13 +253,16 @@ export default {
         // Extract proxy parameter
         const proxyipMatch = pathname.match(/^\/(?:Geo-Project\/)?(.*?)$/);
         if (proxyipMatch && proxyipMatch[1]) {
+          console.log(`[DEBUG] Matched proxy path, proxyip: ${proxyipMatch[1]}`);
           return handleTunnel(request, config, env, proxyipMatch[1]);
         }
       }
       
+      console.log('[DEBUG] No route matched, returning 404');
       return new Response('Not Found', { status: 404 });
     } catch (error) {
       console.error('[ERROR] Request handling failed:', error.message);
+      console.error('[ERROR] Stack:', error.stack);
       return new Response('Internal Server Error', { status: 500 });
     }
   }
