@@ -1,7 +1,6 @@
 /**
- * VMess Protocol Handler (Simplified)
- * Note: Full VMess implementation requires complex encryption
- * This is a basic structure - full implementation would need crypto libraries
+ * VMess Protocol Handler (Stub)
+ * Full implementation would require AES encryption/decryption
  */
 
 export class VmessHandler {
@@ -10,14 +9,25 @@ export class VmessHandler {
     this.webSocket = webSocket;
   }
 
+  /**
+   * Handle VMess handshake
+   * Note: This is a simplified stub. Full VMess implementation requires:
+   * - AES-128-CFB decryption of the auth header
+   * - Complex header parsing
+   * - Response encryption
+   */
   async handleHandshake(data) {
-    // VMess handshake is complex and requires:
-    // 1. AES-128-CFB encryption with MD5 hash of UUID as key
-    // 2. Timestamp validation
-    // 3. AEAD encryption for newer versions
+    // VMess is complex and requires crypto libraries
+    // For now, throw error to try other protocols
+    throw new Error('VMess protocol not fully implemented');
     
-    // For now, throw error - full implementation needed
-    throw new Error('VMess protocol not fully implemented in JavaScript version');
+    // If implemented, should return:
+    // return {
+    //   addressRemote: address,
+    //   portRemote: port,
+    //   rawClientData: data.slice(offset),
+    //   version: responseHeader,
+    // };
   }
 
   async encrypt(data) {
