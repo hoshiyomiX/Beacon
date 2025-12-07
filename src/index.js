@@ -113,7 +113,6 @@ async function handleTunnel(request, config, env, proxyipParam) {
   // Check for WebSocket upgrade
   const upgrade = request.headers.get('Upgrade');
   console.log(`[DEBUG] Upgrade header: ${upgrade}`);
-  console.log(`[DEBUG] All request headers:`, Object.fromEntries(request.headers));
   
   if (upgrade === 'websocket') {
     console.log('[DEBUG] WebSocket upgrade detected, creating WebSocket pair');
@@ -144,29 +143,19 @@ async function handleTunnel(request, config, env, proxyipParam) {
       // Handle WebSocket proxy stream
       const proxyStream = new ProxyStream(config, server);
       
-      // Process stream with timeout
-      const processPromise = proxyStream.process();
-      const timeoutPromise = new Promise((resolve) => 
-        setTimeout(() => resolve('timeout'), 8000)
-      );
-      
-      Promise.race([processPromise, timeoutPromise])
-        .then((result) => {
-          if (result === 'timeout') {
-            console.log('[DEBUG] Connection timeout (8 seconds)');
-          }
-          server.close(1000, 'Connection closed');
-        })
-        .catch((error) => {
-          if (!isBenignError(error.message)) {
-            console.error('[FATAL] Unexpected tunnel error:', error.message);
-            console.error('[FATAL] Stack:', error.stack);
-          }
-          server.close(1000, 'Connection closed');
-        });
+      // FIXED: Don't await or timeout - let it run in background
+      // The WebSocket needs to stay open indefinitely
+      proxyStream.process().catch((error) => {
+        if (!isBenignError(error.message)) {
+          console.error('[ERROR] ProxyStream error:', error.message);
+          console.error('[ERROR] Stack:', error.stack);
+        }
+      });
       
       console.log('[DEBUG] Returning WebSocket upgrade response (101)');
+      
       // Return the client WebSocket in the response
+      // This must be done immediately, the connection stays open
       return new Response(null, {
         status: 101,
         webSocket: client
