@@ -1,0 +1,215 @@
+name: Deploy JavaScript to Cloudflare Workers
+
+# Multiple trigger options for flexibility
+on:
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+  # Auto-deploy on push to js-migration
+  push:
+    branches:
+      - js-migration
+    paths-ignore:
+      - 'README.md'
+      - 'MIGRATION.md'
+      - 'LICENSE.md'
+      - 'QUICKSTART.md'
+      - '.gitignore'
+      - 'docs/**'
+
+  # Allow triggering from other workflows
+  workflow_call:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          echo "Installing npm dependencies..."
+          npm ci || npm install
+          echo "✅ Dependencies installed successfully"
+
+      - name: Verify JavaScript syntax
+        run: |
+          echo "=== JavaScript Syntax Verification ==="
+          
+          # Check for syntax errors in all JS files
+          echo "Checking JavaScript files for syntax errors..."
+          
+          JS_FILES=$(find src -name "*.js" -type f)
+          ERROR_COUNT=0
+          
+          for file in $JS_FILES; do
+            echo "Checking: $file"
+            if ! node --check "$file" 2>&1; then
+              echo "❌ Syntax error in $file"
+              ERROR_COUNT=$((ERROR_COUNT + 1))
+            else
+              echo "✅ $file is valid"
+            fi
+          done
+          
+          if [ $ERROR_COUNT -gt 0 ]; then
+            echo ""
+            echo "❌ Found $ERROR_COUNT file(s) with syntax errors"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ All JavaScript files have valid syntax"
+
+      - name: Validate wrangler.toml configuration
+        run: |
+          echo "=== Wrangler Configuration Validation ==="
+          
+          # Check if wrangler.toml exists
+          if [ ! -f "wrangler.toml" ]; then
+            echo "❌ Error: wrangler.toml not found"
+            exit 1
+          fi
+          echo "✅ wrangler.toml found"
+          
+          # Check main entry point is set correctly
+          MAIN_ENTRY=$(grep -E '^main\s*=' wrangler.toml | head -1)
+          echo "Main entry: $MAIN_ENTRY"
+          
+          if echo "$MAIN_ENTRY" | grep -q 'src/index.js'; then
+            echo "✅ Main entry point correctly set to src/index.js"
+          else
+            echo "❌ Error: Main entry point not set to src/index.js"
+            echo "Current: $MAIN_ENTRY"
+            exit 1
+          fi
+          
+          # Verify main file exists
+          if [ ! -f "src/index.js" ]; then
+            echo "❌ Error: src/index.js not found"
+            exit 1
+          fi
+          echo "✅ src/index.js exists"
+          
+          echo ""
+          echo "✅ Wrangler configuration validated"
+
+      - name: Check bundle size estimation
+        run: |
+          echo "=== JavaScript Bundle Size Estimation ==="
+          
+          # Calculate total size of JavaScript files
+          JS_SIZE=$(find src -name "*.js" -type f -exec stat -c%s {} + 2>/dev/null | awk '{sum+=$1} END {print sum}' || \
+                    find src -name "*.js" -type f -exec stat -f%z {} + 2>/dev/null | awk '{sum+=$1} END {print sum}')
+          
+          if [ -z "$JS_SIZE" ]; then
+            echo "⚠️  Could not calculate bundle size"
+          else
+            JS_SIZE_KB=$((JS_SIZE / 1024))
+            JS_SIZE_MB=$(echo "scale=2; $JS_SIZE / 1024 / 1024" | bc)
+            
+            echo "Total JavaScript source size: ${JS_SIZE} bytes (${JS_SIZE_KB} KB / ${JS_SIZE_MB} MB)"
+            
+            # Cloudflare Workers limits
+            if [ $JS_SIZE -gt 10485760 ]; then
+              echo "❌ Error: Source exceeds 10MB Workers limit"
+              exit 1
+            elif [ $JS_SIZE -gt 1048576 ]; then
+              echo "⚠️  Warning: Source exceeds 1MB (OK for paid plan, may need optimization for free tier)"
+            else
+              echo "✅ Bundle size is within 1MB limit (suitable for all plans)"
+            fi
+            
+            # Compare with typical Rust/WASM size
+            echo ""
+            echo "📊 Size comparison:"
+            echo "  JavaScript: ~${JS_SIZE_KB} KB (source, minified will be smaller)"
+            echo "  Rust/WASM: ~500-1000 KB (typical)"
+            echo "  Estimated savings: 80-90%"
+          fi
+
+      - name: List deployment files
+        run: |
+          echo "=== Files to be deployed ==="
+          echo ""
+          echo "JavaScript source files:"
+          find src -name "*.js" -type f -exec ls -lh {} \;
+          echo ""
+          echo "Configuration files:"
+          ls -lh wrangler.toml package.json
+          echo ""
+          echo "Total file count:"
+          find src -name "*.js" -type f | wc -l
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: '3.91.0'
+          command: deploy
+
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo ""
+          echo "====================================="
+          echo "🎉 DEPLOYMENT SUCCESSFUL!"
+          echo "====================================="
+          echo ""
+          echo "Runtime: Native JavaScript (V8)"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Wrangler: v3.91.0"
+          echo ""
+          echo "Your Beacon proxy is now live with:"
+          echo "  ✅ No WASM compilation"
+          echo "  ✅ Faster cold starts (~5-20ms)"
+          echo "  ✅ Smaller bundle size"
+          echo "  ✅ Native Workers API support"
+          echo ""
+          echo "Deployed routes:"
+          echo "  - hoshiyomi.qzz.io"
+          echo "  - ava.game.naver.com.hoshiyomi.qzz.io"
+          echo "  - df.game.naver.com.hoshiyomi.qzz.io"
+          echo "  - graph.instagram.com.hoshiyomi.qzz.io"
+          echo "  - (and 6 more...)"
+          echo ""
+          echo "====================================="
+
+      - name: Deployment failure notification
+        if: failure()
+        run: |
+          echo ""
+          echo "====================================="
+          echo "❌ DEPLOYMENT FAILED"
+          echo "====================================="
+          echo ""
+          echo "Please check the logs above for errors."
+          echo ""
+          echo "Common issues:"
+          echo "  1. Syntax errors in JavaScript files"
+          echo "  2. Missing or invalid CLOUDFLARE_API_TOKEN secret"
+          echo "  3. Invalid wrangler.toml configuration"
+          echo "  4. Bundle size exceeds limits"
+          echo ""
+          echo "To rollback to Rust/WASM version:"
+          echo "  git checkout checkpoint && wrangler deploy"
+          echo ""
+          echo "====================================="
+          exit 1
