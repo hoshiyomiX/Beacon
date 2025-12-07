@@ -1,8 +1,41 @@
-# Rust
-target/
+# Rust/WASM build artifacts
+/target
+/build
+**/*.rs.bk
+*.pdb
 
-# General
+# JavaScript/Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.pnpm-debug.log*
+
+# Wrangler
+.wrangler/
+worker/
+dist/
+.dev.vars
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
 
-# Note: Cargo.lock is now tracked to ensure reproducible builds
-# This prevents wasm-bindgen version mismatches between local/CI/deployment
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# Testing
+coverage/
+.nyc_output/
