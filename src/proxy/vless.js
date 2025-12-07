@@ -73,10 +73,11 @@ export class VlessHandler {
     this.hasResponse = true;
 
     // Return header info for stream.js
+    // IMPORTANT: Send the ENTIRE buffer to proxy server so it can parse the protocol
     return {
       addressRemote: address,
       portRemote: port,
-      rawClientData: data.slice(offset), // Data after protocol header
+      rawClientData: data, // Send COMPLETE data including VLESS header
       version: new Uint8Array([0, 0]), // VLESS response header
     };
   }
