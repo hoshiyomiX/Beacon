@@ -3,6 +3,13 @@
  * Supports multiple protocols: VLESS, VMess, Trojan, Shadowsocks
  * 
  * Based on FoolVPN-ID/Nautica implementation pattern
+ * 
+ * FIXED Issues:
+ * - Issue #B: Stream lifecycle - await pipeTo()
+ * - Issue #A: Proxy routing - connect to proxy, not target
+ * - Issue #D: Error classification - expanded benign error list
+ * - Issue #E: Write validation - proper socket state checks
+ * - Issue #C: Protocol detection - improved error handling
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -52,6 +59,7 @@ export class ProxyStream {
 
   /**
    * Process the proxy stream using ReadableStream pattern
+   * FIXED Issue #B: Now awaits the pipeTo() to prevent worker exit before stream completion
    */
   async process() {
     try {
@@ -59,8 +67,9 @@ export class ProxyStream {
       
       const readableWebSocketStream = this.makeReadableWebSocketStream();
 
-      // Pipe WebSocket data through WritableStream processor
-      readableWebSocketStream
+      // ✅ FIXED Issue #B: AWAIT the pipe - don't return immediately!
+      // This keeps the worker alive while processing stream data
+      await readableWebSocketStream
         .pipeTo(
           new WritableStream({
             write: async (chunk, controller) => {
@@ -76,9 +85,11 @@ export class ProxyStream {
         )
         .catch((err) => {
           if (!this.isBenignError(err.message || err.toString())) {
-            this.log('readableWebSocketStream pipeTo error', err);
+            console.error('[ERROR] readableWebSocketStream pipeTo error:', err);
           }
         });
+      
+      console.log('[DEBUG] Stream processing completed');
     } catch (error) {
       if (!this.isBenignError(error.message)) {
         console.error('[ERROR] Stream processing failed:', error.message);
@@ -196,100 +207,187 @@ export class ProxyStream {
 
   /**
    * Handle first message to determine protocol and connect
+   * FIXED Issue #C: Improved error handling for protocol detection
    */
   async handleFirstMessage(data) {
     try {
       console.log(`[DEBUG] First byte: 0x${data[0]?.toString(16).padStart(2, '0')}`);
+      console.log(`[DEBUG] Total data length: ${data.length} bytes`);
+      
+      // Minimum data validation
+      if (data.length < 20) {
+        throw new Error(`Insufficient data for protocol detection: ${data.length} bytes`);
+      }
       
       // Try VLESS first (version byte = 0)
       if (data[0] === 0) {
-        console.log('[DEBUG] Detected VLESS protocol');
-        this.protocol = new VlessHandler(this.config, this.webSocket);
-        const header = await this.protocol.handleHandshake(data);
-        this.addressLog = header.addressRemote;
-        this.portLog = header.portRemote;
-        await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
-        return;
+        try {
+          console.log('[DEBUG] Attempting VLESS protocol');
+          this.protocol = new VlessHandler(this.config, this.webSocket);
+          const header = await this.protocol.handleHandshake(data);
+          this.addressLog = header.addressRemote;
+          this.portLog = header.portRemote;
+          console.log(`[DEBUG] VLESS detected: ${header.addressRemote}:${header.portRemote}`);
+          await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
+          return;
+        } catch (e) {
+          console.log(`[DEBUG] VLESS validation failed: ${e.message}`);
+          // Continue to try other protocols
+        }
+      }
+
+      // Try Trojan (second most specific)
+      if (data.length >= 58) {
+        try {
+          console.log('[DEBUG] Attempting Trojan protocol');
+          this.protocol = new TrojanHandler(this.config, this.webSocket);
+          const header = await this.protocol.handleHandshake(data);
+          this.addressLog = header.addressRemote;
+          this.portLog = header.portRemote;
+          console.log(`[DEBUG] Trojan detected: ${header.addressRemote}:${header.portRemote}`);
+          await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
+          return;
+        } catch (e) {
+          console.log(`[DEBUG] Trojan validation failed: ${e.message}`);
+          // Continue to try other protocols
+        }
       }
 
       // Try VMess
       try {
-        console.log('[DEBUG] Trying VMess protocol');
+        console.log('[DEBUG] Attempting VMess protocol');
         this.protocol = new VmessHandler(this.config, this.webSocket);
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
+        console.log(`[DEBUG] VMess detected: ${header.addressRemote}:${header.portRemote}`);
         await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, header.version);
         return;
       } catch (e) {
-        console.log('[DEBUG] Not VMess');
+        console.log(`[DEBUG] VMess validation failed: ${e.message}`);
       }
 
-      // Try Trojan
-      const dataStr = new TextDecoder().decode(data.slice(0, Math.min(60, data.length)));
-      if (dataStr.includes('\r\n')) {
-        console.log('[DEBUG] Detected Trojan protocol');
-        this.protocol = new TrojanHandler(this.config, this.webSocket);
+      // Try Shadowsocks (fallback)
+      try {
+        console.log('[DEBUG] Attempting Shadowsocks protocol');
+        this.protocol = new ShadowsocksHandler(this.config, this.webSocket);
         const header = await this.protocol.handleHandshake(data);
         this.addressLog = header.addressRemote;
         this.portLog = header.portRemote;
+        console.log(`[DEBUG] Shadowsocks detected: ${header.addressRemote}:${header.portRemote}`);
         await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
         return;
+      } catch (e) {
+        console.log(`[DEBUG] Shadowsocks validation failed: ${e.message}`);
       }
 
-      // Default to Shadowsocks
-      console.log('[DEBUG] Defaulting to Shadowsocks');
-      this.protocol = new ShadowsocksHandler(this.config, this.webSocket);
-      const header = await this.protocol.handleHandshake(data);
-      this.addressLog = header.addressRemote;
-      this.portLog = header.portRemote;
-      await this.connectAndWrite(header.addressRemote, header.portRemote, header.rawDataAfterHandshake, null);
+      // None of the protocols matched
+      throw new Error('Unable to determine protocol from client data');
+
     } catch (error) {
       console.error('[ERROR] Protocol determination failed:', error.message);
-      this.webSocket.close(1002, 'Protocol error');
+      try {
+        if (this.webSocket.readyState <= 1) {
+          this.webSocket.close(1002, `Protocol error: ${error.message}`);
+        }
+      } catch (closeError) {
+        console.error('[ERROR] Failed to close WebSocket:', closeError.message);
+      }
     }
   }
 
   /**
-   * Connect to remote and write initial data (Nautica pattern)
-   * FIXED: Await TCP connection before accessing writable (Issue #3)
-   * FIXED: Use try-finally for writer lock safety (Issue #9)
-   * FIXED: Await remoteSocketToWS to prevent WebSocket close during setup (Issue #13)
+   * Connect to remote and write initial data
+   * FIXED Issue #A: Connect to proxy server (config.proxyAddr), not target website
+   * FIXED Issue #9: Use try-finally for writer lock safety
+   * FIXED Issue #13: Await remoteSocketToWS to prevent WebSocket close during setup
    */
   async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
+    let tcpSocket = null;
+    
     try {
-      console.log(`[DEBUG] Connecting to ${address}:${port}`);
+      // Validate inputs
+      if (!address || !port) {
+        throw new Error(`Invalid address/port: ${address}:${port}`);
+      }
       
-      // ✅ FIXED Issue #3: AWAIT THE CONNECTION
-      const tcpSocket = await connect({
-        hostname: address,
-        port: port,
+      if (!rawDataAfterHandshake || rawDataAfterHandshake.length === 0) {
+        throw new Error('No handshake data to send');
+      }
+
+      // ✅ FIXED Issue #A: Connect to PROXY server, not target website!
+      // The target address comes from VLESS/Trojan header, but we relay through proxy
+      console.log(`[DEBUG] Connecting to proxy ${this.config.proxyAddr}:${this.config.proxyPort}`);
+      console.log(`[DEBUG] Target destination (will be relayed by proxy): ${address}:${port}`);
+      
+      tcpSocket = await connect({
+        hostname: this.config.proxyAddr,    // ✅ Connect to PROXY
+        port: this.config.proxyPort,       // ✅ PROXY port
       });
       
+      if (!tcpSocket) {
+        throw new Error('Socket creation failed - returned null');
+      }
+      
       this.remoteSocketWrapper.value = tcpSocket;
-      this.log(`connected to ${address}:${port}`);
+      this.log(`connected to ${this.config.proxyAddr}:${this.config.proxyPort}`);
+      
+      // Validate socket is writable
+      if (!tcpSocket.writable) {
+        throw new Error('Socket writable is not available');
+      }
       
       // ✅ FIXED Issue #9: Use try-finally for writer lock safety
-      const writer = tcpSocket.writable.getWriter();
+      let writer = null;
       try {
+        writer = tcpSocket.writable.getWriter();
+        
+        console.log(`[DEBUG] Writing ${rawDataAfterHandshake.length} bytes of handshake`);
         await writer.write(rawDataAfterHandshake);
+        console.log(`[DEBUG] Successfully sent handshake`);
+        
+      } catch (writeError) {
+        const errorMsg = writeError.message || writeError.toString();
+        console.error(`[ERROR] Write failed: ${errorMsg}`);
+        throw new Error(`Failed to write handshake: ${errorMsg}`);
+        
       } finally {
-        writer.releaseLock();  // ✅ Always release lock
+        if (writer) {
+          try {
+            writer.releaseLock();  // ✅ Always release lock
+            console.log(`[DEBUG] Writer lock released`);
+          } catch (unlockError) {
+            console.warn(`[WARN] Failed to release writer lock: ${unlockError.message}`);
+          }
+        }
       }
-      console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes`);
 
-      // ✅ FIXED Issue #13: AWAIT piping setup - don't return until pipe is ready
-      // This keeps the worker alive and prevents WebSocket from closing
+      // ✅ FIXED Issue #13: AWAIT piping setup
+      console.log(`[DEBUG] Starting remote→WebSocket pipe`);
       await this.remoteSocketToWS(tcpSocket, responseHeader);
+      console.log(`[DEBUG] Remote socket pipe completed`);
       
     } catch (error) {
-      console.error(`[ERROR] Connection failed:`, error.message);
-      try {
-        if (this.webSocket.readyState <= 1) {
-          this.webSocket.close(1002, `Connection failed: ${error.message}`);
+      const errorMsg = error.message || error.toString();
+      console.error(`[ERROR] Connection failed: ${errorMsg}`);
+      console.error(`[ERROR] Stack trace:`, error.stack);
+      
+      // Clean up socket if still open
+      if (tcpSocket && tcpSocket.writable) {
+        try {
+          tcpSocket.writable.close();
+        } catch (closeError) {
+          console.error(`[WARN] Failed to close socket: ${closeError.message}`);
         }
-      } catch (e) {
-        // WebSocket already closed, ignore
+      }
+      
+      // Close WebSocket with error details
+      try {
+        if (this.webSocket && this.webSocket.readyState <= 1) {
+          this.webSocket.close(1002, `Connection failed: ${errorMsg}`);
+        }
+      } catch (wsCloseError) {
+        console.error(`[WARN] Failed to close WebSocket: ${wsCloseError.message}`);
       }
     }
   }
@@ -409,19 +507,74 @@ export class ProxyStream {
 
   /**
    * Check if error is benign
+   * FIXED Issue #D: Expanded error classification for better logging
    */
   isBenignError(errorMsg) {
+    if (!errorMsg) return true;  // No error = benign
+    
     const errorLower = errorMsg.toLowerCase();
-    return (
-      errorLower.includes('writablestream has been closed') ||
-      errorLower.includes('broken pipe') ||
-      errorLower.includes('connection reset') ||
-      errorLower.includes('connection closed') ||
-      errorLower.includes('stream closed') ||
-      errorLower.includes('cancelled') ||
-      errorLower.includes('canceled') ||
-      errorLower.includes('websocket') ||
-      errorLower.includes('not open')
-    );
+    
+    // Expected disconnection/timeout scenarios - these are NORMAL
+    const benignPatterns = [
+      // Stream/Socket closure
+      'writablestream has been closed',
+      'stream closed',
+      'socket closed',
+      'connection closed',
+      
+      // Connection errors (temporary)
+      'broken pipe',
+      'connection reset',
+      'connection refused',
+      'connection timeout',
+      'connection timed out',
+      
+      // I/O timeouts
+      'read timed out',
+      'read timeout',
+      'write timed out',
+      'write timeout',
+      'timeout',
+      
+      // WebSocket specific
+      'websocket',
+      'not open',
+      'closed',
+      
+      // Stream end
+      'end of stream',
+      'eof',
+      'stream ended',
+      
+      // Async cancellation
+      'cancelled',
+      'canceled',
+      'cancel',
+      'aborted',
+      'abort',
+      
+      // Network level
+      'network error',
+      'network unreachable',
+      'host unreachable',
+      'no route to host',
+      'network down',
+      
+      // DNS
+      'dns resolution failed',
+      'getaddrinfo',
+      'enotfound',
+      'unknown host',
+      
+      // System level (errno equivalents)
+      'epipe',
+      'econnreset',
+      'econnrefused',
+      'etimedout',
+      'ehostunreach',
+      'enetunreach',
+    ];
+    
+    return benignPatterns.some(pattern => errorLower.includes(pattern));
   }
 }
