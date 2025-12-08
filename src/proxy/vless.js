@@ -75,11 +75,15 @@ export class VlessHandler {
     const payloadData = data.slice(offset);
     console.log(`[DEBUG] VLESS: Sending ${payloadData.length} bytes of payload to target`);
 
+    // ✅ FIXED Issue #F: VLESS response header - was null, now returns [version][status]
+    // Format: [version(1)=0] [status(1)=0 for success]
+    const responseHeader = new Uint8Array([0, 0]);
+
     return {
       addressRemote: address,
       portRemote: port,
       rawDataAfterHandshake: payloadData, // FIXED: Only send payload, not full handshake
-      version: null, // FIXED: No response header - direct connection mode
+      version: responseHeader,  // ✅ FIXED: Now includes proper VLESS response header
     };
   }
 
