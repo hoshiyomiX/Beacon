@@ -123,11 +123,11 @@ async function handleTunnel(request, config, env, proxyipParam) {
       
       console.log('[DEBUG] WebSocket pair created successfully');
       
-      // Accept the WebSocket connection
-      server.accept();
-      console.log('[DEBUG] Server WebSocket accepted');
+      // FIXED: Setup ProxyStream handlers BEFORE accepting connection
+      // This prevents race condition where client sends data before ReadableStream is ready
+      const proxyStream = new ProxyStream(config, server);
       
-      // Add connection monitoring
+      // Add connection monitoring BEFORE accept
       server.addEventListener('open', () => {
         console.log('[DEBUG] Server WebSocket OPEN event');
       });
@@ -140,11 +140,11 @@ async function handleTunnel(request, config, env, proxyipParam) {
         console.error('[ERROR] Server WebSocket ERROR event:', event);
       });
       
-      // Handle WebSocket proxy stream
-      const proxyStream = new ProxyStream(config, server);
+      // NOW accept the connection - handlers are ready
+      server.accept();
+      console.log('[DEBUG] Server WebSocket accepted (after handler setup)');
       
-      // FIXED: Don't await or timeout - let it run in background
-      // The WebSocket needs to stay open indefinitely
+      // Start processing (non-blocking)
       proxyStream.process().catch((error) => {
         if (!isBenignError(error.message)) {
           console.error('[ERROR] ProxyStream error:', error.message);
