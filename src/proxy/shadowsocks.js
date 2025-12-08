@@ -27,9 +27,12 @@ export class ShadowsocksHandler {
         addressValue = new Uint8Array(data.slice(addressValueIndex, addressValueIndex + addressLength)).join('.');
         break;
       case 3: // Domain
-        addressLength = new Uint8Array(data.slice(addressValueIndex, addressValueIndex + 1))[0];
-        addressValueIndex += 1;
-        addressValue = new TextDecoder().decode(data.slice(addressValueIndex, addressValueIndex + addressLength));
+        // ✅ FIXED Issue #7: Correct offset calculation
+        const domainLength = new Uint8Array(data.slice(addressValueIndex, addressValueIndex + 1))[0];
+        addressValueIndex += 1;  // ✅ Now points to start of domain name
+        addressValue = new TextDecoder().decode(data.slice(addressValueIndex, addressValueIndex + domainLength));
+        addressValueIndex += domainLength;  // ✅ Move past domain for next field
+        addressLength = domainLength + 1;   // ✅ Track total length
         break;
       case 4: // IPv6
         addressLength = 16;
@@ -48,17 +51,18 @@ export class ShadowsocksHandler {
       throw new Error(`Destination address empty, address type is: ${addressType}`);
     }
 
-    const portIndex = addressValueIndex + addressLength;
+    const portIndex = addressValueIndex + (addressType === 3 ? addressLength - 1 : addressLength);
     const portBuffer = data.slice(portIndex, portIndex + 2);
     const portRemote = new DataView(portBuffer.buffer || portBuffer).getUint16(0);
     
     console.log(`[DEBUG] Shadowsocks: ${addressValue}:${portRemote}`);
 
     // Return complete data to proxy server
+    // ✅ FIXED Issue #1: Correct field name from 'rawClientData' to 'rawDataAfterHandshake'
     return {
       addressRemote: addressValue,
       portRemote: portRemote,
-      rawClientData: data, // Send COMPLETE data to proxy
+      rawDataAfterHandshake: data,  // ✅ CORRECT FIELD NAME
       version: null,
     };
   }
