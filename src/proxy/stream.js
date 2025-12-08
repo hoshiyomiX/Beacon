@@ -90,18 +90,42 @@ export class ProxyStream {
 
   /**
    * Create ReadableStream from WebSocket (Nautica pattern)
+   * FIXED: Normalize all WebSocket message types to ArrayBuffer (Issue #2)
    */
   makeReadableWebSocketStream() {
     let readableStreamCancel = false;
     
     return new ReadableStream({
       start: (controller) => {
-        this.webSocket.addEventListener('message', (event) => {
+        this.webSocket.addEventListener('message', async (event) => {
           if (readableStreamCancel) {
             return;
           }
-          const message = event.data;
-          controller.enqueue(message);
+          
+          try {
+            let arrayBuffer;
+            const data = event.data;
+            
+            // ✅ FIXED Issue #2: NORMALIZE ALL DATA TO ARRAYBUFFER
+            if (data instanceof ArrayBuffer) {
+              arrayBuffer = data;
+            } else if (data instanceof Blob) {
+              arrayBuffer = await data.arrayBuffer();
+            } else if (data instanceof Uint8Array || ArrayBuffer.isView(data)) {
+              // Create proper ArrayBuffer slice
+              arrayBuffer = data.buffer.slice(
+                data.byteOffset, 
+                data.byteOffset + data.byteLength
+              );
+            } else {
+              console.warn('[WARN] Unknown message type:', typeof data);
+              return;
+            }
+            
+            controller.enqueue(arrayBuffer);
+          } catch (err) {
+            controller.error(err);
+          }
         });
 
         this.webSocket.addEventListener('close', () => {
@@ -228,12 +252,15 @@ export class ProxyStream {
 
   /**
    * Connect to remote and write initial data (Nautica pattern)
+   * FIXED: Await TCP connection before accessing writable (Issue #3)
+   * FIXED: Use try-finally for writer lock safety (Issue #9)
    */
   async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
     try {
       console.log(`[DEBUG] Connecting to ${address}:${port}`);
       
-      const tcpSocket = connect({
+      // ✅ FIXED Issue #3: AWAIT THE CONNECTION
+      const tcpSocket = await connect({
         hostname: address,
         port: port,
       });
@@ -241,23 +268,34 @@ export class ProxyStream {
       this.remoteSocketWrapper.value = tcpSocket;
       this.log(`connected to ${address}:${port}`);
       
+      // ✅ FIXED Issue #9: Use try-finally for writer lock safety
       const writer = tcpSocket.writable.getWriter();
-      await writer.write(rawDataAfterHandshake);
-      writer.releaseLock();
+      try {
+        await writer.write(rawDataAfterHandshake);
+      } finally {
+        writer.releaseLock();  // ✅ Always release lock
+      }
       console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes`);
 
-      // Pipe remote socket to WebSocket
+      // ✅ Socket is fully connected before piping
       this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
       console.error(`[ERROR] Connection failed:`, error.message);
-      this.webSocket.close(1002, `Connection failed: ${error.message}`);
+      try {
+        if (this.webSocket.readyState <= 1) {
+          this.webSocket.close(1002, `Connection failed: ${error.message}`);
+        }
+      } catch (e) {
+        // WebSocket already closed, ignore
+      }
     }
   }
 
   /**
    * Pipe remote socket to WebSocket (f55692c fix: capture 'this' context)
    * FIXED: All WebSocket sends now use consistent ArrayBuffer type
+   * FIXED: Writer lock safety with try-finally (Issue #9)
    */
   async remoteSocketToWS(remoteSocket, responseHeader) {
     let header = responseHeader;
@@ -320,6 +358,7 @@ export class ProxyStream {
 
   /**
    * Forward data to remote socket
+   * FIXED: Writer lock safety with try-finally (Issue #9)
    */
   async forwardToRemote(data) {
     try {
@@ -334,9 +373,13 @@ export class ProxyStream {
         encrypted = await this.protocol.encrypt(data);
       }
 
+      // ✅ FIXED Issue #9: Use try-finally for writer lock safety
       const writer = this.remoteSocketWrapper.value.writable.getWriter();
-      await writer.write(encrypted);
-      writer.releaseLock();
+      try {
+        await writer.write(encrypted);
+      } finally {
+        writer.releaseLock();  // ✅ Always release lock
+      }
       
       console.log(`[DEBUG] Forwarded ${encrypted.length} bytes`);
     } catch (error) {
