@@ -68,14 +68,18 @@ export class VlessHandler {
     }
 
     console.log(`[DEBUG] VLESS: ${address}:${port}, command: ${command}`);
+    console.log(`[DEBUG] VLESS: Header ends at byte ${offset}, total data: ${data.length} bytes`);
 
-    // Return header info for stream.js
-    // IMPORTANT: Send the ENTIRE buffer to proxy server so it can parse the protocol
+    // CRITICAL FIX: Return only the payload data AFTER the VLESS header
+    // The target server should receive raw data, NOT VLESS protocol headers
+    const payloadData = data.slice(offset);
+    console.log(`[DEBUG] VLESS: Sending ${payloadData.length} bytes of payload to target`);
+
     return {
       addressRemote: address,
       portRemote: port,
-      rawClientData: data, // Send COMPLETE data including VLESS header
-      version: new Uint8Array([0, 0]), // VLESS response header
+      rawDataAfterHandshake: payloadData, // FIXED: Only send payload, not full handshake
+      version: null, // FIXED: No response header - direct connection mode
     };
   }
 
@@ -89,12 +93,10 @@ export class VlessHandler {
   /**
    * VLESS doesn't decrypt - just pass through
    * 
-   * CRITICAL: The proxy server handles VLESS protocol negotiation.
-   * Data coming back from the proxy is ALREADY DECRYPTED and is raw HTTP/HTTPS response.
-   * DO NOT add VLESS response headers - that corrupts the actual data!
+   * In direct connection mode, data from target is already raw HTTP/HTTPS response.
+   * No VLESS protocol wrapping needed.
    */
   async decrypt(data) {
-    // Just pass through - proxy server already handled VLESS protocol
     return data;
   }
 
