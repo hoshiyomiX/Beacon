@@ -11,7 +11,7 @@ export class TrojanHandler {
 
   /**
    * Handle Trojan handshake and return header info
-   * Format: hex(SHA224(password)) + CRLF + [command(1)] + [addr_type(1)] + [addr...] + [port(2)] + CRLF
+   * Format: hex(SHA224(password)) + CRLF + [command(1)] + [addr_type(1)] + [addr...] + [port(2)] + CRLF + [payload...]
    */
   async handleHandshake(data) {
     const dataStr = new TextDecoder().decode(data);
@@ -30,8 +30,8 @@ export class TrojanHandler {
 
     console.log('[DEBUG] Trojan connection authenticated');
 
-    // Parse the rest after CRLF
-    let offset = crlfIndex + 2;
+    // Parse the rest after first CRLF
+    let offset = crlfIndex + 2; // Skip CRLF
     const payload = new Uint8Array(data.slice(offset));
     
     const command = payload[0];
@@ -62,14 +62,33 @@ export class TrojanHandler {
     }
     
     const port = (payload[addrOffset] << 8) | payload[addrOffset + 1];
+    addrOffset += 2;
     
     console.log(`[DEBUG] Trojan: ${address}:${port}, command=${command}`);
+    
+    // CRITICAL FIX: Find second CRLF and send only payload after it
+    // Trojan protocol has: hash + CRLF + headers + CRLF + payload
+    const secondCrlfStart = offset + addrOffset;
+    let payloadStartOffset = secondCrlfStart;
+    
+    // Look for second CRLF in the data
+    for (let i = secondCrlfStart; i < data.length - 1; i++) {
+      if (data[i] === 0x0d && data[i + 1] === 0x0a) { // \r\n
+        payloadStartOffset = i + 2;
+        break;
+      }
+    }
+    
+    // Extract only the payload data after all Trojan headers
+    const payloadData = data.slice(payloadStartOffset);
+    console.log(`[DEBUG] Trojan: Header ends at byte ${payloadStartOffset}, total data: ${data.length} bytes`);
+    console.log(`[DEBUG] Trojan: Sending ${payloadData.length} bytes of payload to target`);
 
-    // Return complete data to proxy server
+    // FIXED: Return only payload data, not full handshake with password hash
     return {
       addressRemote: address,
       portRemote: port,
-      rawClientData: data, // Send COMPLETE data to proxy
+      rawDataAfterHandshake: payloadData, // FIXED: Only send payload
       version: null,
     };
   }
