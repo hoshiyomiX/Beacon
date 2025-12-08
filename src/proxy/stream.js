@@ -30,6 +30,27 @@ export class ProxyStream {
   }
 
   /**
+   * Convert any data type to ArrayBuffer for consistent WebSocket sends
+   * This prevents TransformStream type errors
+   */
+  toArrayBuffer(data) {
+    if (data instanceof ArrayBuffer) {
+      return data;
+    }
+    if (data instanceof Uint8Array) {
+      // Create a proper ArrayBuffer slice (not a view)
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    }
+    if (ArrayBuffer.isView(data)) {
+      // Handle other TypedArray types
+      return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+    }
+    // Shouldn't reach here, but handle as fallback
+    console.warn('[WARN] Unexpected data type in toArrayBuffer:', typeof data);
+    return data;
+  }
+
+  /**
    * Process the proxy stream using ReadableStream pattern
    */
   async process() {
@@ -236,6 +257,7 @@ export class ProxyStream {
 
   /**
    * Pipe remote socket to WebSocket (f55692c fix: capture 'this' context)
+   * FIXED: All WebSocket sends now use consistent ArrayBuffer type
    */
   async remoteSocketToWS(remoteSocket, responseHeader) {
     let header = responseHeader;
@@ -247,6 +269,7 @@ export class ProxyStream {
     const log = this.log.bind(this);
     const isBenignError = this.isBenignError.bind(this);
     const safeCloseWebSocket = this.safeCloseWebSocket.bind(this);
+    const toArrayBuffer = this.toArrayBuffer.bind(this);
     
     await remoteSocket.readable
       .pipeTo(
@@ -266,12 +289,17 @@ export class ProxyStream {
               decrypted = await protocol.decrypt(chunk);
             }
             
-            // Send to WebSocket (exactly as Nautica)
+            // FIXED: Ensure ALL WebSocket sends use ArrayBuffer type for consistency
+            // This prevents TransformStream type mismatch errors
             if (header) {
-              webSocket.send(await new Blob([header, decrypted]).arrayBuffer());
+              // First send includes response header
+              const combined = await new Blob([header, decrypted]).arrayBuffer();
+              webSocket.send(combined);
               header = null;
             } else {
-              webSocket.send(decrypted);
+              // Subsequent sends: convert to ArrayBuffer if needed
+              const buffer = toArrayBuffer(decrypted);
+              webSocket.send(buffer);
             }
           },
           close() {
