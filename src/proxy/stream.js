@@ -254,6 +254,7 @@ export class ProxyStream {
    * Connect to remote and write initial data (Nautica pattern)
    * FIXED: Await TCP connection before accessing writable (Issue #3)
    * FIXED: Use try-finally for writer lock safety (Issue #9)
+   * FIXED: Await remoteSocketToWS to prevent WebSocket close during setup (Issue #13)
    */
   async connectAndWrite(address, port, rawDataAfterHandshake, responseHeader) {
     try {
@@ -277,8 +278,9 @@ export class ProxyStream {
       }
       console.log(`[DEBUG] Sent ${rawDataAfterHandshake.length} bytes`);
 
-      // ✅ Socket is fully connected before piping
-      this.remoteSocketToWS(tcpSocket, responseHeader);
+      // ✅ FIXED Issue #13: AWAIT piping setup - don't return until pipe is ready
+      // This keeps the worker alive and prevents WebSocket from closing
+      await this.remoteSocketToWS(tcpSocket, responseHeader);
       
     } catch (error) {
       console.error(`[ERROR] Connection failed:`, error.message);
