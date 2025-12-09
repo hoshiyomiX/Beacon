@@ -12,6 +12,8 @@ use worker::*;
 // Reduced buffer sizes for lower memory usage in Cloudflare Workers
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
+// Conservative iteration bound to stay within free-tier CPU limits
+static MAX_TRANSFER_ITERATIONS: usize = 1_000; // ~short-lived loops only
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -99,12 +101,11 @@ where
         let mut buf_a = vec![0u8; 8192];
         let mut buf_b = vec![0u8; 8192];
         let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 100_000; // Safety limit
 
         loop {
             iterations += 1;
-            if iterations > MAX_ITERATIONS {
-                console_log!("[WARN] Transfer loop exceeded max iterations, terminating gracefully");
+            if iterations > MAX_TRANSFER_ITERATIONS {
+                console_log!("[WARN] Transfer loop exceeded safe iterations, terminating early for free tier");
                 break;
             }
 
