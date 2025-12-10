@@ -13,7 +13,7 @@ use worker::*;
 static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
 static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
 // Conservative iteration bound to stay within free-tier CPU limits
-static MAX_TRANSFER_ITERATIONS: usize = 1_000; // ~short-lived loops only
+static MAX_TRANSFER_ITERATIONS: usize = 500; // tighter bound for free tier
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -84,7 +84,9 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// WASM-compatible bidirectional copy with 8s timeout for free tier
+/// WASM-compatible bidirectional copy with tiered timeout strategy
+/// - Connection phase is handled separately in `handle_tcp_outbound`
+/// - This function focuses on data transfer and uses a 10s timeout
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -199,14 +201,14 @@ where
         Ok((a_to_b, b_to_a))
     };
 
-    // 8-second timeout for free tier compliance
-    let timeout = TimeoutFuture::new(8_000);
+    // 10-second timeout for data transfer phase
+    let timeout = TimeoutFuture::new(10_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            // Timeout is expected behavior, treat as graceful closure
+            console_log!("[DEBUG] Transfer timeout after 10s");
             Ok((0, 0))
         }
     }
@@ -250,8 +252,8 @@ impl<'a> ProxyStream<'a> {
             Ok(())
         };
 
-        // 8-second timeout for free tier compliance
-        let timeout = TimeoutFuture::new(8_000);
+        // 5-second timeout for initial buffer fill (handshake phase)
+        let timeout = TimeoutFuture::new(5_000);
         futures_util::pin_mut!(fill_future);
         
         match futures_util::future::select(fill_future, timeout).await {
@@ -362,17 +364,17 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // Connect with 8s timeout for free tier compliance
+        // PHASE 1: Connect with 3s timeout for initial TCP establishment
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let timeout = TimeoutFuture::new(8_000);
+        let connect_timeout = TimeoutFuture::new(3_000);
         futures_util::pin_mut!(connect_future);
         
-        let mut remote_socket = match futures_util::future::select(connect_future, timeout).await {
+        let mut remote_socket = match futures_util::future::select(connect_future, connect_timeout).await {
             futures_util::future::Either::Left((Ok(socket), _)) => {
                 console_log!("[DEBUG] Connected to {}:{}", &addr, port);
                 socket
@@ -380,26 +382,24 @@ impl<'a> ProxyStream<'a> {
             futures_util::future::Either::Left((Err(e), _)) => {
                 let error_msg = e.to_string();
                 
-                // Log for debugging but propagate error for proper failover logic
                 if error_msg.to_lowercase().contains("http") {
                     console_log!(
                         "[DEBUG] HTTP service detected at {}:{}",
                         &addr, port
                     );
                 } else {
-                    console_log!("[DEBUG] Connection failed to {}:{}", &addr, port);
+                    console_log!("[DEBUG] Connection failed to {}:{} - {}", &addr, port, error_msg);
                 }
                 
-                // Return error to enable protocol failover logic
-                return Err(Error::RustError(format!("Connection failed to {}:{}", &addr, port)));
+                return Err(Error::RustError(format!("Connection failed to {}:{} - {}", &addr, port, error_msg)));
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[DEBUG] Connection timeout to {}:{}", &addr, port);
+                console_log!("[DEBUG] Connection timeout (3s) to {}:{}", &addr, port);
                 return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
-        // WASM-compatible bidirectional copy with timeout
+        // PHASE 2: WASM-compatible bidirectional copy with 10s timeout
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
