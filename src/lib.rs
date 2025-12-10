@@ -284,9 +284,8 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                 let _ = ProxyStream::new(config, &server, events).process().await;
             };
 
-            // REDUCED: 5-second timeout (from 8s) to minimize CPU time accumulation
-            // Free tier has 10ms CPU limit; shorter timeout reduces accumulation risk
-            let timeout = TimeoutFuture::new(5_000);
+            // STREAMING: 30-second timeout for full WebSocket session
+            let timeout = TimeoutFuture::new(30_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {

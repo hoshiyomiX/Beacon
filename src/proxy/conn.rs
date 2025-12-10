@@ -11,11 +11,11 @@ use worker::*;
 
 // STREAMING-OPTIMIZED: Balanced for video/audio streaming on Cloudflare Workers
 // These settings prioritize throughput while managing CPU time with frequent yields
-static MAX_WEBSOCKET_SIZE: usize = 8 * 1024; // 8KB chunks (better streaming throughput)
-static MAX_BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer (handles burst traffic)
+static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16KB chunks (better streaming throughput)
+static MAX_BUFFER_SIZE: usize = 48 * 1024; // 48KB buffer (handles burst traffic)
 // STREAMING: Allow more iterations but yield frequently to stay under CPU limit
-// 200 iterations × ~0.8ms = ~16ms wall time, but CPU time < 10ms due to I/O wait
-static MAX_TRANSFER_ITERATIONS: usize = 200;
+// 120 iterations × ~0.3ms = ~7.2ms CPU time, under 10ms limit
+static MAX_TRANSFER_ITERATIONS: usize = 120;
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -92,11 +92,11 @@ fn is_warning_error(error_msg: &str) -> bool {
 /// - Cloudflare's 10ms CPU limit is per execution context, NOT total connection time
 /// - I/O operations (read/write) don't count toward CPU time
 /// - Yielding to event loop resets CPU time counter
-/// - We yield every 8 iterations: 8 × 0.1ms = 0.8ms CPU per yield cycle
+/// - We yield every 5 iterations: 5 × 0.15ms ≈ 0.75ms CPU per yield cycle
 /// 
 /// Timeout Strategy:
-/// - 20s wall-clock timeout for active streaming
-/// - Iteration limit (200) as safety net
+/// - 25s wall-clock timeout for active streaming
+/// - Iteration limit (120) as safety net
 /// - Activity detection prevents premature closure of active streams
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
@@ -113,15 +113,15 @@ where
     let transfer_future = async {
         let mut a_to_b: u64 = 0;
         let mut b_to_a: u64 = 0;
-        // 8KB buffers for better streaming throughput
-        let mut buf_a = vec![0u8; 8192];
-        let mut buf_b = vec![0u8; 8192];
+        // 16KB buffers for better streaming throughput
+        let mut buf_a = vec![0u8; 16 * 1024];
+        let mut buf_b = vec![0u8; 16 * 1024];
         let mut iterations = 0;
         let mut idle_count = 0;
         
-        // STREAMING: Yield every 8 iterations to balance throughput vs CPU time
-        // This allows ~1.6MB transfer (200 iter × 8KB) before hitting iteration limit
-        const ITERATIONS_PER_YIELD: usize = 8;
+        // STREAMING: Yield every 5 iterations to balance throughput vs CPU time
+        // This allows ~1.92MB transfer (120 iter × 16KB) before hitting iteration limit
+        const ITERATIONS_PER_YIELD: usize = 5;
 
         loop {
             iterations += 1;
@@ -245,16 +245,16 @@ where
         Ok((a_to_b, b_to_a))
     };
 
-    // STREAMING FIX: 20-second timeout for video/audio streaming workloads
+    // STREAMING FIX: 25-second timeout for video/audio streaming workloads
     // This is wall-clock time (includes I/O wait), NOT CPU time
     // Active streams will continue beyond iteration limit via idle_count check
-    let timeout = TimeoutFuture::new(20_000);
+    let timeout = TimeoutFuture::new(25_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 20s (streaming workload)");
+            console_log!("[DEBUG] Transfer timeout after 25s (streaming workload)");
             Ok((0, 0))
         }
     }
@@ -298,9 +298,9 @@ impl<'a> ProxyStream<'a> {
             Ok(())
         };
 
-        // STREAMING FIX: 10-second timeout for initial handshake (was 5s)
-        // Slow clients or high-latency networks need more time
-        let timeout = TimeoutFuture::new(10_000);
+        // STREAMING FIX: 8-second timeout for initial handshake (was 10s)
+        // Slow clients or high-latency networks need time but should not hang too long
+        let timeout = TimeoutFuture::new(8_000);
         futures_util::pin_mut!(fill_future);
         
         match futures_util::future::select(fill_future, timeout).await {
@@ -447,7 +447,7 @@ impl<'a> ProxyStream<'a> {
             }
         };
 
-        // STREAMING FIX: Use optimized bidirectional copy (20s timeout, 200 iterations)
+        // STREAMING FIX: Use optimized bidirectional copy (25s timeout, 120 iterations)
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
