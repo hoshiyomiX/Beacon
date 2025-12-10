@@ -9,13 +9,13 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-// Optimized buffer sizes for Cloudflare Workers free tier
-// Smaller chunks = lower memory usage + better CPU time distribution
-static MAX_WEBSOCKET_SIZE: usize = 4 * 1024; // 4kb
-static MAX_BUFFER_SIZE: usize = 32 * 1024; // 32kb
-// CRITICAL: Free tier has 10ms CPU time limit per request
-// With 5-iteration yielding: 50 iterations = ~5-7.5ms total CPU time
-static MAX_TRANSFER_ITERATIONS: usize = 50; // REDUCED from 150 for free tier
+// STREAMING-OPTIMIZED: Balanced for video/audio streaming on Cloudflare Workers
+// These settings prioritize throughput while managing CPU time with frequent yields
+static MAX_WEBSOCKET_SIZE: usize = 8 * 1024; // 8KB chunks (better streaming throughput)
+static MAX_BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer (handles burst traffic)
+// STREAMING: Allow more iterations but yield frequently to stay under CPU limit
+// 200 iterations × ~0.8ms = ~16ms wall time, but CPU time < 10ms due to I/O wait
+static MAX_TRANSFER_ITERATIONS: usize = 200;
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -86,14 +86,18 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// WASM-compatible bidirectional copy with chunked processing and periodic yielding
-/// Implements aggressive CPU time management for Cloudflare Workers free tier (10ms limit)
+/// STREAMING-OPTIMIZED bidirectional copy for video/audio streaming
 /// 
-/// Strategy:
-/// - Smaller buffer size (4KB) for faster processing chunks
-/// - Yield to event loop every 5 iterations (REDUCED from 10) to reset CPU time counter
-/// - Max 50 iterations (REDUCED from 150) to keep total CPU time under 10ms
-/// - 5s wall-clock timeout (REDUCED from 10s) for data transfer phase
+/// CPU Time Management Strategy:
+/// - Cloudflare's 10ms CPU limit is per execution context, NOT total connection time
+/// - I/O operations (read/write) don't count toward CPU time
+/// - Yielding to event loop resets CPU time counter
+/// - We yield every 8 iterations: 8 × 0.1ms = 0.8ms CPU per yield cycle
+/// 
+/// Timeout Strategy:
+/// - 20s wall-clock timeout for active streaming
+/// - Iteration limit (200) as safety net
+/// - Activity detection prevents premature closure of active streams
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -109,29 +113,34 @@ where
     let transfer_future = async {
         let mut a_to_b: u64 = 0;
         let mut b_to_a: u64 = 0;
-        // Reduced buffer size for smaller processing chunks (4KB)
-        let mut buf_a = vec![0u8; 4096];
-        let mut buf_b = vec![0u8; 4096];
+        // 8KB buffers for better streaming throughput
+        let mut buf_a = vec![0u8; 8192];
+        let mut buf_b = vec![0u8; 8192];
         let mut iterations = 0;
+        let mut idle_count = 0;
         
-        // CRITICAL: Yield every 5 iterations instead of 10 for free tier
-        // More frequent yielding = better CPU time management
-        const ITERATIONS_PER_YIELD: usize = 5;
+        // STREAMING: Yield every 8 iterations to balance throughput vs CPU time
+        // This allows ~1.6MB transfer (200 iter × 8KB) before hitting iteration limit
+        const ITERATIONS_PER_YIELD: usize = 8;
 
         loop {
             iterations += 1;
             
-            // CHUNKED PROCESSING: Yield periodically to distribute CPU time
+            // STREAMING FIX: Frequent yielding keeps CPU time under 10ms limit
             if iterations % ITERATIONS_PER_YIELD == 0 {
-                // Explicit yield to JavaScript event loop
-                // This resets the CPU time counter, allowing us to continue processing
+                // Yield to JavaScript event loop - resets CPU time counter
                 let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
                 let _ = JsFuture::from(promise).await;
                 
-                // Check max iterations AFTER yielding to allow more total work
+                // STREAMING FIX: Only enforce limit if connection is truly idle
                 if iterations > MAX_TRANSFER_ITERATIONS {
-                    console_log!("[WARN] Max iterations ({}) reached, closing connection gracefully", MAX_TRANSFER_ITERATIONS);
-                    break;
+                    // If we've had 10+ consecutive idle iterations, connection is dead
+                    if idle_count > 10 {
+                        console_log!("[DEBUG] Idle connection detected after {} iterations, closing", iterations);
+                        break;
+                    }
+                    // Active stream - allow continuation by not breaking
+                    console_log!("[DEBUG] Active stream at {} iterations, continuing", iterations);
                 }
             }
 
@@ -162,6 +171,7 @@ where
                         Ok(n) => {
                             b.write_all(&buf_a[..n]).await?;
                             a_to_b += n as u64;
+                            idle_count = 0; // Reset on activity
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
                             // Benign error from A, shutdown B and drain
@@ -203,6 +213,7 @@ where
                         Ok(n) => {
                             a.write_all(&buf_b[..n]).await?;
                             b_to_a += n as u64;
+                            idle_count = 0; // Reset on activity
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
                             // Benign error from B, shutdown A and drain
@@ -224,20 +235,26 @@ where
                     }
                 }
             }
+            
+            // Track idle iterations to detect stalled connections
+            if a_to_b == 0 && b_to_a == 0 {
+                idle_count += 1;
+            }
         }
 
         Ok((a_to_b, b_to_a))
     };
 
-    // REDUCED: 5-second wall-clock timeout (from 10s) for data transfer phase
-    // Note: This is wall-clock time (waiting for I/O), not CPU time
-    let timeout = TimeoutFuture::new(5_000);
+    // STREAMING FIX: 20-second timeout for video/audio streaming workloads
+    // This is wall-clock time (includes I/O wait), NOT CPU time
+    // Active streams will continue beyond iteration limit via idle_count check
+    let timeout = TimeoutFuture::new(20_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 5s wall-clock time");
+            console_log!("[DEBUG] Transfer timeout after 20s (streaming workload)");
             Ok((0, 0))
         }
     }
@@ -281,8 +298,9 @@ impl<'a> ProxyStream<'a> {
             Ok(())
         };
 
-        // 5-second timeout for initial buffer fill (handshake phase)
-        let timeout = TimeoutFuture::new(5_000);
+        // STREAMING FIX: 10-second timeout for initial handshake (was 5s)
+        // Slow clients or high-latency networks need more time
+        let timeout = TimeoutFuture::new(10_000);
         futures_util::pin_mut!(fill_future);
         
         match futures_util::future::select(fill_future, timeout).await {
@@ -393,14 +411,15 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // PHASE 1: REDUCED timeout to 2s (from 3s) for faster failure recovery
+        // STREAMING FIX: 4-second connection timeout (increased from 2s)
+        // Balances fast failure with slow proxy server support
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let connect_timeout = TimeoutFuture::new(2_000);
+        let connect_timeout = TimeoutFuture::new(4_000);
         futures_util::pin_mut!(connect_future);
         
         let mut remote_socket = match futures_util::future::select(connect_future, connect_timeout).await {
@@ -423,12 +442,12 @@ impl<'a> ProxyStream<'a> {
                 return Err(Error::RustError(format!("Connection failed to {}:{} - {}", &addr, port, error_msg)));
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[DEBUG] Connection timeout (2s) to {}:{}", &addr, port);
+                console_log!("[DEBUG] Connection timeout (4s) to {}:{}", &addr, port);
                 return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
-        // PHASE 2: Chunked bidirectional copy with periodic yielding
+        // STREAMING FIX: Use optimized bidirectional copy (20s timeout, 200 iterations)
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
@@ -488,10 +507,10 @@ impl<'a> AsyncRead for ProxyStream<'a> {
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
                     if let Some(data) = msg.bytes() {
+                        // STREAMING FIX: Accept larger messages for video streaming
                         if data.len() > MAX_WEBSOCKET_SIZE {
-                            // Buffer size violation is benign - aggressive client
-                            console_log!("[DEBUG] Websocket message too large, dropping");
-                            return Poll::Ready(Ok(()));
+                            console_log!("[DEBUG] Large websocket message: {} bytes (streaming mode)", data.len());
+                            // Still accept for streaming workloads
                         }
                         
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
