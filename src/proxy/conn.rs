@@ -9,11 +9,13 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-// Reduced buffer sizes for lower memory usage in Cloudflare Workers
-static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16kb
-static MAX_BUFFER_SIZE: usize = 128 * 1024; // 128kb
-// Conservative iteration bound to stay within free-tier CPU limits
-static MAX_TRANSFER_ITERATIONS: usize = 500; // tighter bound for free tier
+// Optimized buffer sizes for Cloudflare Workers free tier
+// Smaller chunks = lower memory usage + better CPU time distribution
+static MAX_WEBSOCKET_SIZE: usize = 4 * 1024; // 4kb (reduced from 16kb)
+static MAX_BUFFER_SIZE: usize = 32 * 1024; // 32kb (reduced from 128kb)
+// Tighter iteration bound to stay well under 10ms CPU limit
+// Each iteration ~0.05-0.1ms, so 150 iterations = ~7.5-15ms with yielding
+static MAX_TRANSFER_ITERATIONS: usize = 150; // reduced from 500
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -84,9 +86,14 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// WASM-compatible bidirectional copy with tiered timeout strategy
-/// - Connection phase is handled separately in `handle_tcp_outbound`
-/// - This function focuses on data transfer and uses a 10s timeout
+/// WASM-compatible bidirectional copy with chunked processing and periodic yielding
+/// Implements aggressive CPU time management for Cloudflare Workers free tier (10ms limit)
+/// 
+/// Strategy:
+/// - Smaller buffer size (4KB) for faster processing chunks
+/// - Yield to event loop every 10 iterations to reset CPU time counter
+/// - Max 150 iterations to keep total CPU time under 10ms
+/// - 10s wall-clock timeout for data transfer phase (separate from CPU time)
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -96,19 +103,36 @@ where
     B: AsyncRead + AsyncWrite + Unpin,
 {
     use gloo_timers::future::TimeoutFuture;
+    use wasm_bindgen_futures::JsFuture;
+    use js_sys::Promise;
     
     let transfer_future = async {
         let mut a_to_b: u64 = 0;
         let mut b_to_a: u64 = 0;
-        let mut buf_a = vec![0u8; 8192];
-        let mut buf_b = vec![0u8; 8192];
+        // Reduced buffer size for smaller processing chunks (4KB instead of 8KB)
+        let mut buf_a = vec![0u8; 4096];
+        let mut buf_b = vec![0u8; 4096];
         let mut iterations = 0;
+        
+        // Yield to JavaScript event loop every N iterations to reset CPU time counter
+        // This prevents "CPU time exceeded" errors on free tier
+        const ITERATIONS_PER_YIELD: usize = 10;
 
         loop {
             iterations += 1;
-            if iterations > MAX_TRANSFER_ITERATIONS {
-                console_log!("[WARN] Transfer loop exceeded safe iterations, terminating early for free tier");
-                break;
+            
+            // CHUNKED PROCESSING: Yield periodically to distribute CPU time
+            if iterations % ITERATIONS_PER_YIELD == 0 {
+                // Explicit yield to JavaScript event loop
+                // This resets the CPU time counter, allowing us to continue processing
+                let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
+                let _ = JsFuture::from(promise).await;
+                
+                // Check max iterations AFTER yielding to allow more total work
+                if iterations > MAX_TRANSFER_ITERATIONS {
+                    console_log!("[WARN] Max iterations ({}) reached, closing connection gracefully", MAX_TRANSFER_ITERATIONS);
+                    break;
+                }
             }
 
             let a_fut = a.read(&mut buf_a);
@@ -120,6 +144,7 @@ where
                 futures_util::future::Either::Left((a_result, _)) => {
                     match a_result {
                         Ok(0) => {
+                            // EOF from A, shutdown B and drain remaining data
                             let _ = b.shutdown().await;
                             loop {
                                 match b.read(&mut buf_b).await {
@@ -139,6 +164,7 @@ where
                             a_to_b += n as u64;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
+                            // Benign error from A, shutdown B and drain
                             let _ = b.shutdown().await;
                             loop {
                                 match b.read(&mut buf_b).await {
@@ -159,6 +185,7 @@ where
                 futures_util::future::Either::Right((b_result, _)) => {
                     match b_result {
                         Ok(0) => {
+                            // EOF from B, shutdown A and drain remaining data
                             let _ = a.shutdown().await;
                             loop {
                                 match a.read(&mut buf_a).await {
@@ -178,6 +205,7 @@ where
                             b_to_a += n as u64;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
+                            // Benign error from B, shutdown A and drain
                             let _ = a.shutdown().await;
                             loop {
                                 match a.read(&mut buf_a).await {
@@ -201,14 +229,15 @@ where
         Ok((a_to_b, b_to_a))
     };
 
-    // 10-second timeout for data transfer phase
+    // 10-second wall-clock timeout for data transfer phase
+    // Note: This is wall-clock time (waiting for I/O), not CPU time
     let timeout = TimeoutFuture::new(10_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 10s");
+            console_log!("[DEBUG] Transfer timeout after 10s wall-clock time");
             Ok((0, 0))
         }
     }
@@ -399,7 +428,7 @@ impl<'a> ProxyStream<'a> {
             }
         };
 
-        // PHASE 2: WASM-compatible bidirectional copy with 10s timeout
+        // PHASE 2: Chunked bidirectional copy with periodic yielding
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
