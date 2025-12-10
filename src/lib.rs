@@ -284,7 +284,9 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                 let _ = ProxyStream::new(config, &server, events).process().await;
             };
 
-            let timeout = TimeoutFuture::new(8_000);
+            // REDUCED: 5-second timeout (from 8s) to minimize CPU time accumulation
+            // Free tier has 10ms CPU limit; shorter timeout reduces accumulation risk
+            let timeout = TimeoutFuture::new(5_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {
