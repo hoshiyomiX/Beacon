@@ -11,11 +11,11 @@ use worker::*;
 
 // Optimized buffer sizes for Cloudflare Workers free tier
 // Smaller chunks = lower memory usage + better CPU time distribution
-static MAX_WEBSOCKET_SIZE: usize = 4 * 1024; // 4kb (reduced from 16kb)
-static MAX_BUFFER_SIZE: usize = 32 * 1024; // 32kb (reduced from 128kb)
-// Tighter iteration bound to stay well under 10ms CPU limit
-// Each iteration ~0.05-0.1ms, so 150 iterations = ~7.5-15ms with yielding
-static MAX_TRANSFER_ITERATIONS: usize = 150; // reduced from 500
+static MAX_WEBSOCKET_SIZE: usize = 4 * 1024; // 4kb
+static MAX_BUFFER_SIZE: usize = 32 * 1024; // 32kb
+// CRITICAL: Free tier has 10ms CPU time limit per request
+// With 5-iteration yielding: 50 iterations = ~5-7.5ms total CPU time
+static MAX_TRANSFER_ITERATIONS: usize = 50; // REDUCED from 150 for free tier
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -91,9 +91,9 @@ fn is_warning_error(error_msg: &str) -> bool {
 /// 
 /// Strategy:
 /// - Smaller buffer size (4KB) for faster processing chunks
-/// - Yield to event loop every 10 iterations to reset CPU time counter
-/// - Max 150 iterations to keep total CPU time under 10ms
-/// - 10s wall-clock timeout for data transfer phase (separate from CPU time)
+/// - Yield to event loop every 5 iterations (REDUCED from 10) to reset CPU time counter
+/// - Max 50 iterations (REDUCED from 150) to keep total CPU time under 10ms
+/// - 5s wall-clock timeout (REDUCED from 10s) for data transfer phase
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -109,14 +109,14 @@ where
     let transfer_future = async {
         let mut a_to_b: u64 = 0;
         let mut b_to_a: u64 = 0;
-        // Reduced buffer size for smaller processing chunks (4KB instead of 8KB)
+        // Reduced buffer size for smaller processing chunks (4KB)
         let mut buf_a = vec![0u8; 4096];
         let mut buf_b = vec![0u8; 4096];
         let mut iterations = 0;
         
-        // Yield to JavaScript event loop every N iterations to reset CPU time counter
-        // This prevents "CPU time exceeded" errors on free tier
-        const ITERATIONS_PER_YIELD: usize = 10;
+        // CRITICAL: Yield every 5 iterations instead of 10 for free tier
+        // More frequent yielding = better CPU time management
+        const ITERATIONS_PER_YIELD: usize = 5;
 
         loop {
             iterations += 1;
@@ -229,15 +229,15 @@ where
         Ok((a_to_b, b_to_a))
     };
 
-    // 10-second wall-clock timeout for data transfer phase
+    // REDUCED: 5-second wall-clock timeout (from 10s) for data transfer phase
     // Note: This is wall-clock time (waiting for I/O), not CPU time
-    let timeout = TimeoutFuture::new(10_000);
+    let timeout = TimeoutFuture::new(5_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 10s wall-clock time");
+            console_log!("[DEBUG] Transfer timeout after 5s wall-clock time");
             Ok((0, 0))
         }
     }
@@ -393,14 +393,14 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // PHASE 1: Connect with 3s timeout for initial TCP establishment
+        // PHASE 1: REDUCED timeout to 2s (from 3s) for faster failure recovery
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let connect_timeout = TimeoutFuture::new(3_000);
+        let connect_timeout = TimeoutFuture::new(2_000);
         futures_util::pin_mut!(connect_future);
         
         let mut remote_socket = match futures_util::future::select(connect_future, connect_timeout).await {
@@ -423,7 +423,7 @@ impl<'a> ProxyStream<'a> {
                 return Err(Error::RustError(format!("Connection failed to {}:{} - {}", &addr, port, error_msg)));
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[DEBUG] Connection timeout (3s) to {}:{}", &addr, port);
+                console_log!("[DEBUG] Connection timeout (2s) to {}:{}", &addr, port);
                 return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
