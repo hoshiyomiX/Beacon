@@ -11,7 +11,6 @@ use worker::*;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-// Regex compilation at initialization - only fails at compile time, safe to unwrap
 static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
 static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
 
@@ -39,19 +38,18 @@ fn is_benign_error(error_msg: &str) -> bool {
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
-    // Parse UUID with proper error handling
     let uuid = match env.var("UUID") {
         Ok(uuid_var) => {
             match Uuid::parse_str(&uuid_var.to_string()) {
                 Ok(parsed) => parsed,
                 Err(_) => {
-                    console_error!("[ERROR] Invalid UUID format in environment variable");
+                    console_error!("[ERROR] Invalid UUID format");
                     return Response::error("Invalid server configuration: UUID", 502);
                 }
             }
         }
         Err(_) => {
-            console_error!("[ERROR] UUID environment variable not found");
+            console_error!("[ERROR] UUID not found");
             return Response::error("Server configuration error: Missing UUID", 502);
         }
     };
@@ -59,17 +57,16 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
     let host = match req.url() {
         Ok(url) => url.host().map(|x| x.to_string()).unwrap_or_default(),
         Err(_) => {
-            console_error!("[ERROR] Failed to parse request URL");
+            console_error!("[ERROR] Failed to parse URL");
             return Response::error("Invalid request URL", 400);
         }
     };
     
-    // Parse environment variables with proper error handling
     let main_page_url = match env.var("MAIN_PAGE_URL") {
         Ok(val) => val.to_string(),
         Err(_) => {
             console_error!("[ERROR] MAIN_PAGE_URL not configured");
-            return Response::error("Server configuration error: Missing MAIN_PAGE_URL", 502);
+            return Response::error("Server configuration error", 502);
         }
     };
     
@@ -77,7 +74,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         Ok(val) => val.to_string(),
         Err(_) => {
             console_error!("[ERROR] SUB_PAGE_URL not configured");
-            return Response::error("Server configuration error: Missing SUB_PAGE_URL", 502);
+            return Response::error("Server configuration error", 502);
         }
     };
     
@@ -85,7 +82,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         Ok(val) => val.to_string(),
         Err(_) => {
             console_error!("[ERROR] LINK_PAGE_URL not configured");
-            return Response::error("Server configuration error: Missing LINK_PAGE_URL", 502);
+            return Response::error("Server configuration error", 502);
         }
     };
     
@@ -93,7 +90,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         Ok(val) => val.to_string(),
         Err(_) => {
             console_error!("[ERROR] CONVERTER_PAGE_URL not configured");
-            return Response::error("Server configuration error: Missing CONVERTER_PAGE_URL", 502);
+            return Response::error("Server configuration error", 502);
         }
     };
     
@@ -101,7 +98,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         Ok(val) => val.to_string(),
         Err(_) => {
             console_error!("[ERROR] CHECKER_PAGE_URL not configured");
-            return Response::error("Server configuration error: Missing CHECKER_PAGE_URL", 502);
+            return Response::error("Server configuration error", 502);
         }
     };
 
@@ -156,19 +153,15 @@ async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
 }
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
-    // Wrap entire function to catch WebSocket handshake errors
     let result = tunnel_inner(req, &mut cx).await;
     
-    // Suppress benign errors before they reach Cloudflare logs
     match result {
         Ok(response) => Ok(response),
         Err(e) => {
             let error_msg = e.to_string();
             if is_benign_error(&error_msg) {
-                // Return a simple response instead of propagating error
                 Response::ok("Connection closed")
             } else {
-                // Only unexpected errors propagate
                 console_error!("[FATAL] Unexpected tunnel error: {}", error_msg);
                 Err(e)
             }
@@ -187,30 +180,26 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
     
     let mut proxyip = proxyip_param;
     
-    // Handle proxy selection from bundled list
     if PROXYKV_PATTERN.is_match(&proxyip) {
         let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
         
-        // Get bundled proxy list from environment variables
         let proxy_list_json = cx.env.var("PROXY_LIST")
             .map(|x| x.to_string())
             .unwrap_or_else(|_| "{}".to_string());
         
-        // Parse proxy list (no KV or external fetch needed!)
         let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
             Ok(map) => map,
             Err(e) => {
-                console_error!("[ERROR] Invalid PROXY_LIST configuration: {}", e);
+                console_error!("[ERROR] Invalid PROXY_LIST: {}", e);
                 return Response::error("Invalid server configuration: PROXY_LIST", 502);
             }
         };
         
-        // Random selection logic with proper error handling
         let mut rand_buf = [0u8, 1];
         match getrandom::getrandom(&mut rand_buf) {
             Ok(_) => {},
             Err(e) => {
-                console_error!("[ERROR] Failed to generate random number: {}", e);
+                console_error!("[ERROR] Random generation failed: {}", e);
                 return Response::error("Server error: Random generation failed", 500);
             }
         }
@@ -218,14 +207,13 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         let kv_index = (rand_buf[0] as usize) % kvid_list.len();
         proxyip = kvid_list[kv_index].clone();
         
-        // Select random proxy from the country list
         if let Some(proxy_list) = proxy_kv.get(&proxyip) {
             if !proxy_list.is_empty() {
                 let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
                 proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
             } else {
-                console_error!("[ERROR] No proxies available for country: {}", &proxyip);
-                return Response::error("No proxies available for selected region", 502);
+                console_error!("[ERROR] No proxies for: {}", &proxyip);
+                return Response::error("No proxies available", 502);
             }
         } else {
             console_error!("[ERROR] Country code not found: {}", &proxyip);
@@ -260,17 +248,13 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
             }
         };
         
-        // Clone config for the spawned task
         let config = cx.data.clone();
         
-        // Spawn WebSocket processing in fire-and-forget mode with best-effort error handling
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
 
-            // Accept connection; ignore errors (Cloudflare will close the socket)
             let _ = server.accept();
 
-            // Get events; if this fails, nothing to do
             let events = match server.events() {
                 Ok(ev) => ev,
                 Err(_) => {
@@ -279,13 +263,12 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                 }
             };
 
-            // Process proxy stream with timeout; ignore processing errors as they are already classified as benign/non-benign inside ProxyStream
             let process_future = async {
                 let _ = ProxyStream::new(config, &server, events).process().await;
             };
 
-            // STREAMING: 30-second timeout for full WebSocket session
-            let timeout = TimeoutFuture::new(30_000);
+            // FAST TRANSFER: 15-second timeout (balanced for most use cases)
+            let timeout = TimeoutFuture::new(15_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {
@@ -293,16 +276,13 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
                     let _ = server.close(Some(1000), Some("Normal closure".to_string()));
                 },
                 futures_util::future::Either::Right(_) => {
-                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                    let _ = server.close(Some(1000), Some("Timeout".to_string()));
                 }
             }
         });
 
-        // CRITICAL FIX: Handle Response::from_websocket() errors to prevent hung workers
-        // If this fails (e.g., client disconnected), we must return a proper error response
-        // instead of leaving an unresolved Promise that hangs the worker
         Response::from_websocket(client).or_else(|e| {
-            console_log!("[DEBUG] WebSocket response creation failed: {}", e);
+            console_log!("[DEBUG] WebSocket handshake failed: {}", e);
             Response::error("WebSocket handshake failed", 400)
         })
     } else {
