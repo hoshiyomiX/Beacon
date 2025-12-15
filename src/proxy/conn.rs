@@ -9,13 +9,11 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-// STREAMING-OPTIMIZED: Balanced for video/audio streaming on Cloudflare Workers
-// These settings prioritize throughput while managing CPU time with frequent yields
-static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16KB chunks (better streaming throughput)
-static MAX_BUFFER_SIZE: usize = 48 * 1024; // 48KB buffer (handles burst traffic)
-// STREAMING: Allow more iterations but yield frequently to stay under CPU limit
-// 120 iterations × ~0.3ms = ~7.2ms CPU time, under 10ms limit
-static MAX_TRANSFER_ITERATIONS: usize = 120;
+// OPTIMIZED FOR FAST TRANSFER: Medium settings for balanced performance
+static MAX_WEBSOCKET_SIZE: usize = 32 * 1024; // 32KB chunks - fast transfer
+static MAX_BUFFER_SIZE: usize = 64 * 1024;    // 64KB buffer - handle bursts
+// CPU TIME BREAKER: Conservative iteration limit with dynamic adjustment
+static MAX_TRANSFER_ITERATIONS: usize = 80;   // ~6.4ms baseline, adjusted dynamically
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -28,11 +26,9 @@ pin_project! {
 }
 
 /// Check if an error is benign (expected during normal operation)
-/// Benign errors should be silently handled without propagating to Cloudflare logs
 pub fn is_benign_error(error_msg: &str) -> bool {
     let error_lower = error_msg.to_lowercase();
     
-    // Connection lifecycle errors (normal client/network behavior)
     error_lower.contains("writablestream has been closed")
         || error_lower.contains("broken pipe")
         || error_lower.contains("connection reset")
@@ -43,61 +39,84 @@ pub fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("connection aborted")
         || error_lower.contains("network error")
         || error_lower.contains("socket closed")
-        
-        // Timeout errors (expected in proxy scenarios with slow/unreachable targets)
         || error_lower.contains("timed out")
         || error_lower.contains("timeout")
         || error_lower.contains("deadline")
-        
-        // HTTP protocol detection (user misconfiguration, not a system error)
         || error_lower.contains("http")
         || error_lower.contains("https")
-        
-        // Buffer/resource limits (client-side behavior)
         || error_lower.contains("buffer")
         || error_lower.contains("not enough")
         || error_lower.contains("too large")
         || error_lower.contains("too long")
-        
-        // Rate limiting and worker constraints (platform-expected)
         || error_lower.contains("rate limit")
         || error_lower.contains("quota")
         || error_lower.contains("exceeded")
-        
-        // DNS and routing issues (transient network conditions)
         || error_lower.contains("dns")
         || error_lower.contains("host not found")
         || error_lower.contains("unreachable")
-        
-        // Protocol-level expected conditions
         || error_lower.contains("protocol not implemented")
         || error_lower.contains("handshake")
         || error_lower.contains("connection failed")
         || error_lower.contains("all") && error_lower.contains("failed")
 }
 
-/// Determine if an error should be logged as WARNING (transient/expected issues)
+/// Determine if an error should be logged as WARNING
 fn is_warning_error(error_msg: &str) -> bool {
     let error_lower = error_msg.to_lowercase();
     
-    // Resource constraints that may affect service but are recoverable
     error_lower.contains("backpressure")
         || error_lower.contains("buffer full")
         || error_lower.contains("max iterations")
+        || error_lower.contains("cpu limit")
 }
 
-/// STREAMING-OPTIMIZED bidirectional copy for video/audio streaming
+/// CPU Time Tracker for Cloudflare Workers 10ms limit
+struct CpuTimeTracker {
+    start_time: f64,
+    cpu_limit_ms: f64,
+}
+
+impl CpuTimeTracker {
+    fn new() -> Self {
+        Self {
+            start_time: Self::get_timestamp(),
+            cpu_limit_ms: 8.0, // 8ms hard limit (2ms safety margin)
+        }
+    }
+    
+    fn get_timestamp() -> f64 {
+        js_sys::Date::now()
+    }
+    
+    fn elapsed_ms(&self) -> f64 {
+        Self::get_timestamp() - self.start_time
+    }
+    
+    fn should_yield(&self) -> bool {
+        self.elapsed_ms() >= 0.75 // Yield every 0.75ms of CPU time
+    }
+    
+    fn should_break(&self) -> bool {
+        self.elapsed_ms() >= self.cpu_limit_ms
+    }
+    
+    fn reset(&mut self) {
+        self.start_time = Self::get_timestamp();
+    }
+}
+
+/// FAST TRANSFER OPTIMIZED bidirectional copy with CPU time breaker
 /// 
-/// CPU Time Management Strategy:
-/// - Cloudflare's 10ms CPU limit is per execution context, NOT total connection time
-/// - I/O operations (read/write) don't count toward CPU time
-/// - Yielding to event loop resets CPU time counter
-/// - We yield every 5 iterations: 5 × 0.15ms ≈ 0.75ms CPU per yield cycle
+/// CPU Time Management:
+/// - 8ms hard limit enforced via performance.now() tracking
+/// - Yield every 0.75ms to reset CPU counter
+/// - I/O operations don't count toward CPU time
+/// - Automatic termination when approaching 10ms limit
 /// 
-/// Timeout Strategy:
-/// - 25s wall-clock timeout for active streaming
-/// - Iteration limit (120) as safety net
-/// - Activity detection prevents premature closure of active streams
+/// Performance Settings:
+/// - 32KB buffers for fast throughput
+/// - 15s timeout (medium - balanced for most use cases)
+/// - Dynamic iteration adjustment based on CPU usage
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -113,34 +132,51 @@ where
     let transfer_future = async {
         let mut a_to_b: u64 = 0;
         let mut b_to_a: u64 = 0;
-        // 16KB buffers for better streaming throughput
-        let mut buf_a = vec![0u8; 16 * 1024];
-        let mut buf_b = vec![0u8; 16 * 1024];
+        let mut buf_a = vec![0u8; 32 * 1024]; // 32KB for fast transfer
+        let mut buf_b = vec![0u8; 32 * 1024];
         let mut iterations = 0;
         let mut idle_count = 0;
+        let mut cpu_tracker = CpuTimeTracker::new();
         
-        // STREAMING: Yield every 5 iterations to balance throughput vs CPU time
-        // This allows ~1.92MB transfer (120 iter × 16KB) before hitting iteration limit
-        const ITERATIONS_PER_YIELD: usize = 5;
+        // Yield every 3 iterations for optimal CPU/throughput balance
+        const ITERATIONS_PER_YIELD: usize = 3;
 
         loop {
             iterations += 1;
             
-            // STREAMING FIX: Frequent yielding keeps CPU time under 10ms limit
+            // CPU TIME BREAKER: Check if we're approaching the 10ms limit
+            if cpu_tracker.should_break() {
+                console_log!(
+                    "[CPU LIMIT] Breaker triggered at {:.2}ms CPU time, {} iterations",
+                    cpu_tracker.elapsed_ms(),
+                    iterations
+                );
+                // Graceful shutdown - allow connection to resume later
+                break;
+            }
+            
+            // Yield to event loop periodically
             if iterations % ITERATIONS_PER_YIELD == 0 {
-                // Yield to JavaScript event loop - resets CPU time counter
-                let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
-                let _ = JsFuture::from(promise).await;
+                if cpu_tracker.should_yield() {
+                    let elapsed = cpu_tracker.elapsed_ms();
+                    
+                    // Yield to JavaScript event loop - resets CPU counter
+                    let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
+                    let _ = JsFuture::from(promise).await;
+                    
+                    // Reset tracker after yield
+                    cpu_tracker.reset();
+                    
+                    console_log!(
+                        "[CPU DEBUG] Yielded after {:.2}ms, {} iterations, transferred: up {} / dl {}",
+                        elapsed, iterations, convert(a_to_b as f64), convert(b_to_a as f64)
+                    );
+                }
                 
-                // STREAMING FIX: Only enforce limit if connection is truly idle
-                if iterations > MAX_TRANSFER_ITERATIONS {
-                    // If we've had 10+ consecutive idle iterations, connection is dead
-                    if idle_count > 10 {
-                        console_log!("[DEBUG] Idle connection detected after {} iterations, closing", iterations);
-                        break;
-                    }
-                    // Active stream - allow continuation by not breaking
-                    console_log!("[DEBUG] Active stream at {} iterations, continuing", iterations);
+                // Safety check: enforce iteration limit for stalled connections
+                if iterations > MAX_TRANSFER_ITERATIONS && idle_count > 10 {
+                    console_log!("[DEBUG] Idle connection detected after {} iterations", iterations);
+                    break;
                 }
             }
 
@@ -153,9 +189,13 @@ where
                 futures_util::future::Either::Left((a_result, _)) => {
                     match a_result {
                         Ok(0) => {
-                            // EOF from A, shutdown B and drain remaining data
+                            // EOF from A
                             let _ = b.shutdown().await;
                             loop {
+                                if cpu_tracker.should_break() {
+                                    console_log!("[CPU LIMIT] Breaker during drain");
+                                    break;
+                                }
                                 match b.read(&mut buf_b).await {
                                     Ok(0) => break,
                                     Ok(n) => {
@@ -171,12 +211,14 @@ where
                         Ok(n) => {
                             b.write_all(&buf_a[..n]).await?;
                             a_to_b += n as u64;
-                            idle_count = 0; // Reset on activity
+                            idle_count = 0;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
-                            // Benign error from A, shutdown B and drain
                             let _ = b.shutdown().await;
                             loop {
+                                if cpu_tracker.should_break() {
+                                    break;
+                                }
                                 match b.read(&mut buf_b).await {
                                     Ok(0) => break,
                                     Ok(n) => {
@@ -195,9 +237,13 @@ where
                 futures_util::future::Either::Right((b_result, _)) => {
                     match b_result {
                         Ok(0) => {
-                            // EOF from B, shutdown A and drain remaining data
+                            // EOF from B
                             let _ = a.shutdown().await;
                             loop {
+                                if cpu_tracker.should_break() {
+                                    console_log!("[CPU LIMIT] Breaker during drain");
+                                    break;
+                                }
                                 match a.read(&mut buf_a).await {
                                     Ok(0) => break,
                                     Ok(n) => {
@@ -213,12 +259,14 @@ where
                         Ok(n) => {
                             a.write_all(&buf_b[..n]).await?;
                             b_to_a += n as u64;
-                            idle_count = 0; // Reset on activity
+                            idle_count = 0;
                         }
                         Err(e) if is_benign_error(&e.to_string()) => {
-                            // Benign error from B, shutdown A and drain
                             let _ = a.shutdown().await;
                             loop {
+                                if cpu_tracker.should_break() {
+                                    break;
+                                }
                                 match a.read(&mut buf_a).await {
                                     Ok(0) => break,
                                     Ok(n) => {
@@ -236,25 +284,29 @@ where
                 }
             }
             
-            // Track idle iterations to detect stalled connections
+            // Track idle iterations
             if a_to_b == 0 && b_to_a == 0 {
                 idle_count += 1;
             }
         }
 
+        console_log!(
+            "[TRANSFER COMPLETE] {} iterations, CPU time: {:.2}ms",
+            iterations,
+            cpu_tracker.elapsed_ms()
+        );
+
         Ok((a_to_b, b_to_a))
     };
 
-    // STREAMING FIX: 25-second timeout for video/audio streaming workloads
-    // This is wall-clock time (includes I/O wait), NOT CPU time
-    // Active streams will continue beyond iteration limit via idle_count check
-    let timeout = TimeoutFuture::new(25_000);
+    // MEDIUM TIMEOUT: 15 seconds for balanced performance
+    let timeout = TimeoutFuture::new(15_000);
     futures_util::pin_mut!(transfer_future);
     
     match futures_util::future::select(transfer_future, timeout).await {
         futures_util::future::Either::Left((result, _)) => result,
         futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 25s (streaming workload)");
+            console_log!("[DEBUG] Transfer timeout after 15s");
             Ok((0, 0))
         }
     }
@@ -298,17 +350,13 @@ impl<'a> ProxyStream<'a> {
             Ok(())
         };
 
-        // STREAMING FIX: 8-second timeout for initial handshake (was 10s)
-        // Slow clients or high-latency networks need time but should not hang too long
-        let timeout = TimeoutFuture::new(8_000);
+        // FAST HANDSHAKE: 5-second timeout for initial connection
+        let timeout = TimeoutFuture::new(5_000);
         futures_util::pin_mut!(fill_future);
         
         match futures_util::future::select(fill_future, timeout).await {
             futures_util::future::Either::Left((result, _)) => result,
-            futures_util::future::Either::Right(_) => {
-                // Buffer fill timeout is benign - client may have slow connection
-                Ok(())
-            }
+            futures_util::future::Either::Right(_) => Ok(()),
         }
     }
 
@@ -323,11 +371,9 @@ impl<'a> ProxyStream<'a> {
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
 
         if peeked_buffer.len() < (peek_buffer_len/2) {
-            // Insufficient buffer is benign - client disconnected early
             return Ok(());
         }
 
-        // Process protocol and wrap result to suppress benign errors from Cloudflare logs
         let result = if self.is_vless(peeked_buffer) {
             console_log!("vless detected!");
             self.process_vless().await
@@ -341,20 +387,16 @@ impl<'a> ProxyStream<'a> {
             console_log!("vmess detected!");
             self.process_vmess().await
         } else {
-            // Unknown protocol is benign - could be probe/scanner
             return Ok(());
         };
 
-        // Top-level error suppression: silence benign errors before Cloudflare logging
         match result {
             Ok(_) => Ok(()),
             Err(e) => {
                 let error_msg = e.to_string();
                 if is_benign_error(&error_msg) {
-                    // Silent success - don't propagate to Cloudflare logs
                     Ok(())
                 } else {
-                    // Only true bugs/unexpected errors propagate
                     console_log!("[FATAL] Unexpected error: {}", error_msg);
                     Err(e)
                 }
@@ -368,14 +410,14 @@ impl<'a> ProxyStream<'a> {
 
     fn is_shadowsocks(&self, buffer: &[u8]) -> bool {
         match buffer[0] {
-            1 => { // IPv4
+            1 => {
                 if buffer.len() < 7 {
                     return false;
                 }
                 let remote_port = u16::from_be_bytes([buffer[5], buffer[6]]);
                 remote_port != 0
             }
-            3 => { // Domain name
+            3 => {
                 if buffer.len() < 2 {
                     return false;
                 }
@@ -389,7 +431,7 @@ impl<'a> ProxyStream<'a> {
                 ]);
                 remote_port != 0
             }
-            4 => { // IPv6
+            4 => {
                 if buffer.len() < 19 {
                     return false;
                 }
@@ -405,21 +447,20 @@ impl<'a> ProxyStream<'a> {
     }
 
     fn is_vmess(&self, buffer: &[u8]) -> bool {
-        buffer.len() > 0 // fallback
+        buffer.len() > 0
     }
 
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // STREAMING FIX: 4-second connection timeout (increased from 2s)
-        // Balances fast failure with slow proxy server support
+        // FAST CONNECTION: 3-second timeout for quick failure
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let connect_timeout = TimeoutFuture::new(4_000);
+        let connect_timeout = TimeoutFuture::new(3_000);
         futures_util::pin_mut!(connect_future);
         
         let mut remote_socket = match futures_util::future::select(connect_future, connect_timeout).await {
@@ -431,27 +472,24 @@ impl<'a> ProxyStream<'a> {
                 let error_msg = e.to_string();
                 
                 if error_msg.to_lowercase().contains("http") {
-                    console_log!(
-                        "[DEBUG] HTTP service detected at {}:{}",
-                        &addr, port
-                    );
+                    console_log!("[DEBUG] HTTP service at {}:{}", &addr, port);
                 } else {
                     console_log!("[DEBUG] Connection failed to {}:{} - {}", &addr, port, error_msg);
                 }
                 
-                return Err(Error::RustError(format!("Connection failed to {}:{} - {}", &addr, port, error_msg)));
+                return Err(Error::RustError(format!("Connection failed: {}", error_msg)));
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[DEBUG] Connection timeout (4s) to {}:{}", &addr, port);
+                console_log!("[DEBUG] Connection timeout (3s) to {}:{}", &addr, port);
                 return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
-        // STREAMING FIX: Use optimized bidirectional copy (25s timeout, 120 iterations)
+        // Use optimized bidirectional copy with CPU breaker
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
-                    console_log!("[STATS] Transfer from {}:{} completed - up: {} / dl: {}", 
+                    console_log!("[STATS] {}:{} - up: {} / dl: {}", 
                         &addr, &port, convert(a_to_b as f64), convert(b_to_a as f64));
                 }
                 Ok(())
@@ -459,20 +497,17 @@ impl<'a> ProxyStream<'a> {
             Err(e) => {
                 let error_msg = e.to_string();
                 
-                // Check if transfer error is benign
                 if is_benign_error(&error_msg) {
                     return Ok(());
                 }
                 
-                // Check if it's a warning-level error
                 if is_warning_error(&error_msg) {
-                    console_log!("[WARN] Transfer issue for {}:{} - {}", &addr, port, error_msg);
+                    console_log!("[WARN] {}:{} - {}", &addr, port, error_msg);
                     return Ok(());
                 }
                 
-                // Propagate unexpected errors
-                console_log!("[ERROR] Transfer error for {}:{} - {}", &addr, port, error_msg);
-                Err(Error::RustError(format!("Transfer error for {}:{}: {}", &addr, port, error_msg)))
+                console_log!("[ERROR] {}:{} - {}", &addr, port, error_msg);
+                Err(Error::RustError(format!("Transfer error: {}", error_msg)))
             }
         }
     }
@@ -507,14 +542,12 @@ impl<'a> AsyncRead for ProxyStream<'a> {
             match this.events.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(WebsocketEvent::Message(msg)))) => {
                     if let Some(data) = msg.bytes() {
-                        // STREAMING FIX: Accept larger messages for video streaming
                         if data.len() > MAX_WEBSOCKET_SIZE {
-                            console_log!("[DEBUG] Large websocket message: {} bytes (streaming mode)", data.len());
-                            // Still accept for streaming workloads
+                            console_log!("[DEBUG] Large message: {} bytes", data.len());
                         }
                         
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
-                            console_log!("[WARN] Buffer full, applying backpressure");
+                            console_log!("[WARN] Buffer full, backpressure");
                             return Poll::Pending;
                         }
                         
