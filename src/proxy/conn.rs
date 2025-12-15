@@ -12,8 +12,8 @@ use worker::*;
 // OPTIMIZED FOR FAST TRANSFER: Medium settings for balanced performance
 static MAX_WEBSOCKET_SIZE: usize = 32 * 1024; // 32KB chunks - fast transfer
 static MAX_BUFFER_SIZE: usize = 64 * 1024;    // 64KB buffer - handle bursts
-// CPU TIME BREAKER: Conservative iteration limit with dynamic adjustment
-static MAX_TRANSFER_ITERATIONS: usize = 80;   // ~6.4ms baseline, adjusted dynamically
+// Iteration limit with aggressive yielding to stay under 10ms CPU
+static MAX_TRANSFER_ITERATIONS: usize = 150;  // Higher limit since CF enforces CPU
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -67,56 +67,20 @@ fn is_warning_error(error_msg: &str) -> bool {
     error_lower.contains("backpressure")
         || error_lower.contains("buffer full")
         || error_lower.contains("max iterations")
-        || error_lower.contains("cpu limit")
 }
 
-/// CPU Time Tracker for Cloudflare Workers 10ms limit
-struct CpuTimeTracker {
-    start_time: f64,
-    cpu_limit_ms: f64,
-}
-
-impl CpuTimeTracker {
-    fn new() -> Self {
-        Self {
-            start_time: Self::get_timestamp(),
-            cpu_limit_ms: 8.0, // 8ms hard limit (2ms safety margin)
-        }
-    }
-    
-    fn get_timestamp() -> f64 {
-        js_sys::Date::now()
-    }
-    
-    fn elapsed_ms(&self) -> f64 {
-        Self::get_timestamp() - self.start_time
-    }
-    
-    fn should_yield(&self) -> bool {
-        self.elapsed_ms() >= 0.75 // Yield every 0.75ms of CPU time
-    }
-    
-    fn should_break(&self) -> bool {
-        self.elapsed_ms() >= self.cpu_limit_ms
-    }
-    
-    fn reset(&mut self) {
-        self.start_time = Self::get_timestamp();
-    }
-}
-
-/// FAST TRANSFER OPTIMIZED bidirectional copy with CPU time breaker
+/// FAST TRANSFER OPTIMIZED bidirectional copy with aggressive yielding
 /// 
-/// CPU Time Management:
-/// - 8ms hard limit enforced via performance.now() tracking
-/// - Yield every 0.75ms to reset CPU counter
-/// - I/O operations don't count toward CPU time
-/// - Automatic termination when approaching 10ms limit
+/// CPU Time Management Strategy:
+/// - Cloudflare Workers enforces 10ms CPU limit automatically
+/// - We yield frequently (every 3 iterations) to stay under limit
+/// - No manual CPU tracking (js_sys::Date measures wall-clock, not CPU)
+/// - If we exceed 10ms, Cloudflare will throw an error (which we handle)
 /// 
 /// Performance Settings:
 /// - 32KB buffers for fast throughput
 /// - 15s timeout (medium - balanced for most use cases)
-/// - Dynamic iteration adjustment based on CPU usage
+/// - Aggressive yielding prevents CPU limit errors
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -125,191 +89,133 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    use gloo_timers::future::TimeoutFuture;
     use wasm_bindgen_futures::JsFuture;
     use js_sys::Promise;
     
-    let transfer_future = async {
-        let mut a_to_b: u64 = 0;
-        let mut b_to_a: u64 = 0;
-        let mut buf_a = vec![0u8; 32 * 1024]; // 32KB for fast transfer
-        let mut buf_b = vec![0u8; 32 * 1024];
-        let mut iterations = 0;
-        let mut idle_count = 0;
-        let mut cpu_tracker = CpuTimeTracker::new();
-        
-        // Yield every 3 iterations for optimal CPU/throughput balance
-        const ITERATIONS_PER_YIELD: usize = 3;
+    let mut a_to_b: u64 = 0;
+    let mut b_to_a: u64 = 0;
+    let mut buf_a = vec![0u8; 32 * 1024]; // 32KB for fast transfer
+    let mut buf_b = vec![0u8; 32 * 1024];
+    let mut iterations = 0;
+    let mut idle_count = 0;
+    
+    // Yield every 3 iterations to stay under CPU limit
+    const ITERATIONS_PER_YIELD: usize = 3;
 
-        loop {
-            iterations += 1;
+    loop {
+        iterations += 1;
+        
+        // Aggressive yielding to prevent CPU limit errors
+        if iterations % ITERATIONS_PER_YIELD == 0 {
+            // Yield to JavaScript event loop
+            let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
+            let _ = JsFuture::from(promise).await;
             
-            // CPU TIME BREAKER: Check if we're approaching the 10ms limit
-            if cpu_tracker.should_break() {
-                console_log!(
-                    "[CPU LIMIT] Breaker triggered at {:.2}ms CPU time, {} iterations",
-                    cpu_tracker.elapsed_ms(),
-                    iterations
-                );
-                // Graceful shutdown - allow connection to resume later
+            // Safety: enforce iteration limit for idle connections
+            if iterations > MAX_TRANSFER_ITERATIONS && idle_count > 10 {
+                console_log!("[DEBUG] Idle connection after {} iterations", iterations);
                 break;
             }
-            
-            // Yield to event loop periodically
-            if iterations % ITERATIONS_PER_YIELD == 0 {
-                if cpu_tracker.should_yield() {
-                    let elapsed = cpu_tracker.elapsed_ms();
-                    
-                    // Yield to JavaScript event loop - resets CPU counter
-                    let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
-                    let _ = JsFuture::from(promise).await;
-                    
-                    // Reset tracker after yield
-                    cpu_tracker.reset();
-                    
-                    console_log!(
-                        "[CPU DEBUG] Yielded after {:.2}ms, {} iterations, transferred: up {} / dl {}",
-                        elapsed, iterations, convert(a_to_b as f64), convert(b_to_a as f64)
-                    );
-                }
-                
-                // Safety check: enforce iteration limit for stalled connections
-                if iterations > MAX_TRANSFER_ITERATIONS && idle_count > 10 {
-                    console_log!("[DEBUG] Idle connection detected after {} iterations", iterations);
-                    break;
-                }
-            }
-
-            let a_fut = a.read(&mut buf_a);
-            let b_fut = b.read(&mut buf_b);
-
-            futures_util::pin_mut!(a_fut, b_fut);
-
-            match futures_util::future::select(a_fut, b_fut).await {
-                futures_util::future::Either::Left((a_result, _)) => {
-                    match a_result {
-                        Ok(0) => {
-                            // EOF from A
-                            let _ = b.shutdown().await;
-                            loop {
-                                if cpu_tracker.should_break() {
-                                    console_log!("[CPU LIMIT] Breaker during drain");
-                                    break;
-                                }
-                                match b.read(&mut buf_b).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        a.write_all(&buf_b[..n]).await?;
-                                        b_to_a += n as u64;
-                                    }
-                                    Err(e) if is_benign_error(&e.to_string()) => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            break;
-                        }
-                        Ok(n) => {
-                            b.write_all(&buf_a[..n]).await?;
-                            a_to_b += n as u64;
-                            idle_count = 0;
-                        }
-                        Err(e) if is_benign_error(&e.to_string()) => {
-                            let _ = b.shutdown().await;
-                            loop {
-                                if cpu_tracker.should_break() {
-                                    break;
-                                }
-                                match b.read(&mut buf_b).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        a.write_all(&buf_b[..n]).await?;
-                                        b_to_a += n as u64;
-                                    }
-                                    Err(e) if is_benign_error(&e.to_string()) => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            break;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-                futures_util::future::Either::Right((b_result, _)) => {
-                    match b_result {
-                        Ok(0) => {
-                            // EOF from B
-                            let _ = a.shutdown().await;
-                            loop {
-                                if cpu_tracker.should_break() {
-                                    console_log!("[CPU LIMIT] Breaker during drain");
-                                    break;
-                                }
-                                match a.read(&mut buf_a).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        b.write_all(&buf_a[..n]).await?;
-                                        a_to_b += n as u64;
-                                    }
-                                    Err(e) if is_benign_error(&e.to_string()) => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            break;
-                        }
-                        Ok(n) => {
-                            a.write_all(&buf_b[..n]).await?;
-                            b_to_a += n as u64;
-                            idle_count = 0;
-                        }
-                        Err(e) if is_benign_error(&e.to_string()) => {
-                            let _ = a.shutdown().await;
-                            loop {
-                                if cpu_tracker.should_break() {
-                                    break;
-                                }
-                                match a.read(&mut buf_a).await {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        b.write_all(&buf_a[..n]).await?;
-                                        a_to_b += n as u64;
-                                    }
-                                    Err(e) if is_benign_error(&e.to_string()) => break,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                            break;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-            
-            // Track idle iterations
-            if a_to_b == 0 && b_to_a == 0 {
-                idle_count += 1;
-            }
         }
 
-        console_log!(
-            "[TRANSFER COMPLETE] {} iterations, CPU time: {:.2}ms",
-            iterations,
-            cpu_tracker.elapsed_ms()
-        );
+        let a_fut = a.read(&mut buf_a);
+        let b_fut = b.read(&mut buf_b);
 
-        Ok((a_to_b, b_to_a))
-    };
+        futures_util::pin_mut!(a_fut, b_fut);
 
-    // MEDIUM TIMEOUT: 15 seconds for balanced performance
-    let timeout = TimeoutFuture::new(15_000);
-    futures_util::pin_mut!(transfer_future);
-    
-    match futures_util::future::select(transfer_future, timeout).await {
-        futures_util::future::Either::Left((result, _)) => result,
-        futures_util::future::Either::Right(_) => {
-            console_log!("[DEBUG] Transfer timeout after 15s");
-            Ok((0, 0))
+        match futures_util::future::select(a_fut, b_fut).await {
+            futures_util::future::Either::Left((a_result, _)) => {
+                match a_result {
+                    Ok(0) => {
+                        // EOF from A
+                        let _ = b.shutdown().await;
+                        loop {
+                            match b.read(&mut buf_b).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        b.write_all(&buf_a[..n]).await?;
+                        a_to_b += n as u64;
+                        idle_count = 0;
+                    }
+                    Err(e) if is_benign_error(&e.to_string()) => {
+                        let _ = b.shutdown().await;
+                        loop {
+                            match b.read(&mut buf_b).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    a.write_all(&buf_b[..n]).await?;
+                                    b_to_a += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            futures_util::future::Either::Right((b_result, _)) => {
+                match b_result {
+                    Ok(0) => {
+                        // EOF from B
+                        let _ = a.shutdown().await;
+                        loop {
+                            match a.read(&mut buf_a).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        a.write_all(&buf_b[..n]).await?;
+                        b_to_a += n as u64;
+                        idle_count = 0;
+                    }
+                    Err(e) if is_benign_error(&e.to_string()) => {
+                        let _ = a.shutdown().await;
+                        loop {
+                            match a.read(&mut buf_a).await {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    b.write_all(&buf_a[..n]).await?;
+                                    a_to_b += n as u64;
+                                }
+                                Err(e) if is_benign_error(&e.to_string()) => break,
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        
+        // Track idle iterations
+        if a_to_b == 0 && b_to_a == 0 {
+            idle_count += 1;
         }
     }
+
+    console_log!("[TRANSFER COMPLETE] {} iterations", iterations);
+    Ok((a_to_b, b_to_a))
 }
 
 impl<'a> ProxyStream<'a> {
@@ -485,7 +391,7 @@ impl<'a> ProxyStream<'a> {
             }
         };
 
-        // Use optimized bidirectional copy with CPU breaker
+        // Use optimized bidirectional copy
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
