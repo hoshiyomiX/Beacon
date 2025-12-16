@@ -253,36 +253,59 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         wasm_bindgen_futures::spawn_local(async move {
             use gloo_timers::future::TimeoutFuture;
 
-            let _ = server.accept();
+            if let Err(e) = server.accept() {
+                console_error!("[ERROR] WebSocket accept failed: {}", e);
+                return;
+            }
 
             let events = match server.events() {
                 Ok(ev) => ev,
-                Err(_) => {
-                    let _ = server.close(Some(1000), Some("Connection closed".to_string()));
+                Err(e) => {
+                    console_error!("[ERROR] WebSocket events failed: {}", e);
+                    let _ = server.close(Some(1011), Some("Event stream error".to_string()));
                     return;
                 }
             };
 
             let process_future = async {
-                let _ = ProxyStream::new(config, &server, events).process().await;
+                match ProxyStream::new(config, &server, events).process().await {
+                    Ok(_) => {
+                        console_log!("[DEBUG] Stream completed successfully");
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if !is_benign_error(&error_msg) {
+                            console_error!("[ERROR] Stream processing failed: {}", error_msg);
+                        }
+                    }
+                }
             };
 
-            // FAST TRANSFER: 15-second timeout (balanced for most use cases)
-            let timeout = TimeoutFuture::new(15_000);
+            // VIDEO STREAMING: 60-second timeout (increased from 15s)
+            let timeout = TimeoutFuture::new(60_000);
             futures_util::pin_mut!(process_future);
             
             match futures_util::future::select(process_future, timeout).await {
                 futures_util::future::Either::Left(_) => {
-                    let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+                    if let Err(e) = server.close(Some(1000), Some("Normal closure".to_string())) {
+                        if !is_benign_error(&e.to_string()) {
+                            console_log!("[WARN] WebSocket close failed: {}", e);
+                        }
+                    }
                 },
                 futures_util::future::Either::Right(_) => {
-                    let _ = server.close(Some(1000), Some("Timeout".to_string()));
+                    console_log!("[DEBUG] WebSocket timeout after 60s");
+                    if let Err(e) = server.close(Some(1000), Some("Timeout".to_string())) {
+                        if !is_benign_error(&e.to_string()) {
+                            console_log!("[WARN] WebSocket timeout close failed: {}", e);
+                        }
+                    }
                 }
             }
         });
 
         Response::from_websocket(client).or_else(|e| {
-            console_log!("[DEBUG] WebSocket handshake failed: {}", e);
+            console_error!("[ERROR] WebSocket handshake failed: {}", e);
             Response::error("WebSocket handshake failed", 400)
         })
     } else {
