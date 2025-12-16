@@ -8,11 +8,6 @@ use crate::proxy::*;
 use std::collections::HashMap;
 use uuid::Uuid;
 use worker::*;
-use once_cell::sync::Lazy;
-use regex::Regex;
-
-static PROXYIP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^.+-\d+$").unwrap());
-static PROXYKV_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"^([A-Z]{2})").unwrap());
 
 /// Check if an error is benign (expected during normal operation)
 fn is_benign_error(error_msg: &str) -> bool {
@@ -34,6 +29,27 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("handshake")
         || error_lower.contains("hung")
         || error_lower.contains("never generate")
+}
+
+/// Check if string matches IP-PORT pattern (e.g., "1.2.3.4-443")
+/// Replaces regex `^.+-\d+$` with zero-cost pattern matching
+fn is_proxyip_format(s: &str) -> bool {
+    if let Some(dash_pos) = s.rfind('-') {
+        if dash_pos == 0 || dash_pos >= s.len() - 1 {
+            return false;
+        }
+        // Check if everything after last dash is numeric
+        s[dash_pos + 1..].chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
+/// Check if string starts with 2 uppercase letters (country code pattern)
+/// Replaces regex `^([A-Z]{2})` with zero-cost pattern matching
+fn is_country_code_format(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_uppercase() && bytes[1].is_ascii_uppercase()
 }
 
 #[event(fetch)]
@@ -180,7 +196,8 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
     
     let mut proxyip = proxyip_param;
     
-    if PROXYKV_PATTERN.is_match(&proxyip) {
+    // KV-based proxy selection (currently disabled but kept for future use)
+    if is_country_code_format(&proxyip) {
         let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
         
         let proxy_list_json = cx.env.var("PROXY_LIST")
@@ -221,7 +238,8 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         }
     }
 
-    if PROXYIP_PATTERN.is_match(&proxyip) {
+    // Parse IP-PORT format (e.g., "1.2.3.4-443")
+    if is_proxyip_format(&proxyip) {
         if let Some((addr, port_str)) = proxyip.split_once('-') {
             if let Ok(port) = port_str.parse() {
                 cx.data.proxy_addr = addr.to_string();
