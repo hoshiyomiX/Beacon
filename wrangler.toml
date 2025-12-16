@@ -4,12 +4,9 @@ compatibility_date = "2024-12-15"
 minify = true
 workers_dev = true
 
-# Free Plan: 10ms CPU limit per request
-# Paid (Bundled): 50ms CPU limit
-usage_model = "bundled"
-
-[limits]
-cpu_ms = 10  # Free tier limit
+# Note: Free plan has implicit 10ms CPU limit
+# Paid (Bundled) plan: 50ms CPU limit
+# Custom domains require paid plan
 
 routes = [
   { pattern = "hoshiyomi.qzz.io", custom_domain = true, zone_id = "e5328b8e5f2ce079260f3be524a3087a" },
