@@ -114,31 +114,48 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         .await
 }
 
+/// KV-cached HTML fetcher with fallback
 #[inline(always)]
-async fn get_response_from_url(url: String) -> Result<Response> {
+async fn get_cached_html(kv: &kv::KvStore, cache_key: &str, url: String) -> Result<Response> {
+    // Try KV cache first (sub-1ms read)
+    if let Some(cached) = kv.get(cache_key).text().await? {
+        return Response::from_html(cached);
+    }
+    
+    // Cache miss: fetch from GitHub and store for 1 hour
     let req = Fetch::Url(Url::parse(url.as_str())?);
     let mut res = req.send().await?;
-    Response::from_html(res.text().await?)
+    let html = res.text().await?;
+    
+    // Fire-and-forget cache update (don't block response)
+    let _ = kv.put(cache_key, &html)?.expiration_ttl(3600).execute().await;
+    
+    Response::from_html(html)
 }
 
 async fn fe(_: Request, cx: RouteContext<Config>) -> Result<Response> {
-    get_response_from_url(cx.data.main_page_url).await
+    let kv = cx.kv("library")?;
+    get_cached_html(&kv, "page:main", cx.data.main_page_url).await
 }
 
 async fn sub(_: Request, cx: RouteContext<Config>) -> Result<Response> {
-    get_response_from_url(cx.data.sub_page_url).await
+    let kv = cx.kv("library")?;
+    get_cached_html(&kv, "page:sub", cx.data.sub_page_url).await
 }
 
 async fn link(_: Request, cx: RouteContext<Config>) -> Result<Response> {
-    get_response_from_url(cx.data.link_page_url).await
+    let kv = cx.kv("library")?;
+    get_cached_html(&kv, "page:link", cx.data.link_page_url).await
 }
 
 async fn converter(_: Request, cx: RouteContext<Config>) -> Result<Response> {
-    get_response_from_url(cx.data.converter_page_url).await
+    let kv = cx.kv("library")?;
+    get_cached_html(&kv, "page:converter", cx.data.converter_page_url).await
 }
 
 async fn checker(_: Request, cx: RouteContext<Config>) -> Result<Response> {
-    get_response_from_url(cx.data.checker_page_url).await
+    let kv = cx.kv("library")?;
+    get_cached_html(&kv, "page:checker", cx.data.checker_page_url).await
 }
 
 async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> {
