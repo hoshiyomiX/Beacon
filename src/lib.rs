@@ -10,6 +10,7 @@ use uuid::Uuid;
 use worker::*;
 
 /// Check if an error is benign (expected during normal operation)
+#[inline(always)]
 fn is_benign_error(error_msg: &str) -> bool {
     let error_lower = error_msg.to_lowercase();
     error_lower.contains("writablestream has been closed")
@@ -31,22 +32,35 @@ fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("never generate")
 }
 
-/// Check if string matches IP-PORT pattern (e.g., "1.2.3.4-443")
-/// Replaces regex `^.+-\d+$` with zero-cost pattern matching
+/// Fast IP-PORT pattern validation with early exit
+#[inline(always)]
 fn is_proxyip_format(s: &str) -> bool {
-    if let Some(dash_pos) = s.rfind('-') {
-        if dash_pos == 0 || dash_pos >= s.len() - 1 {
-            return false;
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    
+    // Fast path: minimum length check (e.g., "1-1" = 3 chars)
+    if len < 3 { return false; }
+    
+    // Find last dash from the end (faster than rfind for short strings)
+    let mut dash_pos = len;
+    for i in (0..len).rev() {
+        if bytes[i] == b'-' {
+            dash_pos = i;
+            break;
         }
-        // Check if everything after last dash is numeric
-        s[dash_pos + 1..].chars().all(|c| c.is_ascii_digit())
-    } else {
-        false
     }
+    
+    if dash_pos == 0 || dash_pos >= len - 1 { return false; }
+    
+    // Validate all chars after dash are ASCII digits
+    for &b in &bytes[dash_pos + 1..] {
+        if !b.is_ascii_digit() { return false; }
+    }
+    true
 }
 
-/// Check if string starts with 2 uppercase letters (country code pattern)
-/// Replaces regex `^([A-Z]{2})` with zero-cost pattern matching
+/// Fast country code validation (2 uppercase letters)
+#[inline(always)]
 fn is_country_code_format(s: &str) -> bool {
     let bytes = s.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_uppercase() && bytes[1].is_ascii_uppercase()
@@ -54,68 +68,26 @@ fn is_country_code_format(s: &str) -> bool {
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
-    let uuid = match env.var("UUID") {
-        Ok(uuid_var) => {
-            match Uuid::parse_str(&uuid_var.to_string()) {
-                Ok(parsed) => parsed,
-                Err(_) => {
-                    console_error!("[ERROR] Invalid UUID format");
-                    return Response::error("Invalid server configuration: UUID", 502);
-                }
-            }
-        }
-        Err(_) => {
-            console_error!("[ERROR] UUID not found");
-            return Response::error("Server configuration error: Missing UUID", 502);
-        }
-    };
+    // Extract host early before any env.var calls
+    let host = req.url()
+        .ok()
+        .and_then(|url| url.host().map(|h| h.to_string()))
+        .unwrap_or_default();
     
-    let host = match req.url() {
-        Ok(url) => url.host().map(|x| x.to_string()).unwrap_or_default(),
-        Err(_) => {
-            console_error!("[ERROR] Failed to parse URL");
-            return Response::error("Invalid request URL", 400);
-        }
-    };
-    
-    let main_page_url = match env.var("MAIN_PAGE_URL") {
-        Ok(val) => val.to_string(),
-        Err(_) => {
-            console_error!("[ERROR] MAIN_PAGE_URL not configured");
-            return Response::error("Server configuration error", 502);
-        }
-    };
-    
-    let sub_page_url = match env.var("SUB_PAGE_URL") {
-        Ok(val) => val.to_string(),
-        Err(_) => {
-            console_error!("[ERROR] SUB_PAGE_URL not configured");
-            return Response::error("Server configuration error", 502);
-        }
-    };
-    
-    let link_page_url = match env.var("LINK_PAGE_URL") {
-        Ok(val) => val.to_string(),
-        Err(_) => {
-            console_error!("[ERROR] LINK_PAGE_URL not configured");
-            return Response::error("Server configuration error", 502);
-        }
-    };
-    
-    let converter_page_url = match env.var("CONVERTER_PAGE_URL") {
-        Ok(val) => val.to_string(),
-        Err(_) => {
-            console_error!("[ERROR] CONVERTER_PAGE_URL not configured");
-            return Response::error("Server configuration error", 502);
-        }
-    };
-    
-    let checker_page_url = match env.var("CHECKER_PAGE_URL") {
-        Ok(val) => val.to_string(),
-        Err(_) => {
-            console_error!("[ERROR] CHECKER_PAGE_URL not configured");
-            return Response::error("Server configuration error", 502);
-        }
+    // Batch all env.var() calls together to minimize FFI overhead
+    let (uuid, main_url, sub_url, link_url, conv_url, check_url) = {
+        let uuid_str = env.var("UUID")?.to_string();
+        let uuid = Uuid::parse_str(&uuid_str)
+            .map_err(|_| Error::RustError("Invalid UUID format".to_string()))?;
+        
+        (
+            uuid,
+            env.var("MAIN_PAGE_URL")?.to_string(),
+            env.var("SUB_PAGE_URL")?.to_string(),
+            env.var("LINK_PAGE_URL")?.to_string(),
+            env.var("CONVERTER_PAGE_URL")?.to_string(),
+            env.var("CHECKER_PAGE_URL")?.to_string(),
+        )
     };
 
     let config = Config { 
@@ -123,11 +95,11 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         host: host.clone(), 
         proxy_addr: host, 
         proxy_port: 443, 
-        main_page_url, 
-        sub_page_url,
-        link_page_url,
-        converter_page_url,
-        checker_page_url
+        main_page_url: main_url, 
+        sub_page_url: sub_url,
+        link_page_url: link_url,
+        converter_page_url: conv_url,
+        checker_page_url: check_url
     };
 
     Router::with_data(config)
@@ -142,6 +114,7 @@ async fn main(req: Request, env: Env, _: Context) -> Result<Response> {
         .await
 }
 
+#[inline(always)]
 async fn get_response_from_url(url: String) -> Result<Response> {
     let req = Fetch::Url(Url::parse(url.as_str())?);
     let mut res = req.send().await?;
@@ -186,60 +159,44 @@ async fn tunnel(req: Request, mut cx: RouteContext<Config>) -> Result<Response> 
 }
 
 async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Response> {
-    let proxyip_param = match cx.param("proxyip") {
-        Some(param) => param.to_string(),
-        None => {
-            console_error!("[ERROR] Missing proxyip parameter");
-            return Response::error("Missing proxy parameter", 400);
-        }
-    };
+    let proxyip_param = cx.param("proxyip")
+        .ok_or_else(|| Error::RustError("Missing proxyip parameter".to_string()))?;
     
-    let mut proxyip = proxyip_param;
+    let mut proxyip = proxyip_param.to_string();
     
-    // KV-based proxy selection (currently disabled but kept for future use)
+    // KV-based proxy selection (lazy-loaded only when needed)
     if is_country_code_format(&proxyip) {
-        let kvid_list: Vec<String> = proxyip.split(",").map(|s| s.to_string()).collect();
+        let kvid_list: Vec<&str> = proxyip.split(',').collect();
         
+        // Lazy load PROXY_LIST only for country code requests
         let proxy_list_json = cx.env.var("PROXY_LIST")
             .map(|x| x.to_string())
             .unwrap_or_else(|_| "{}".to_string());
         
-        let proxy_kv: HashMap<String, Vec<String>> = match serde_json::from_str(&proxy_list_json) {
-            Ok(map) => map,
-            Err(e) => {
-                console_error!("[ERROR] Invalid PROXY_LIST: {}", e);
-                return Response::error("Invalid server configuration: PROXY_LIST", 502);
-            }
-        };
+        let proxy_kv: HashMap<String, Vec<String>> = serde_json::from_str(&proxy_list_json)
+            .map_err(|e| Error::RustError(format!("Invalid PROXY_LIST: {}", e)))?;
         
-        let mut rand_buf = [0u8, 1];
-        match getrandom::getrandom(&mut rand_buf) {
-            Ok(_) => {},
-            Err(e) => {
-                console_error!("[ERROR] Random generation failed: {}", e);
-                return Response::error("Server error: Random generation failed", 500);
-            }
-        }
+        let mut rand_buf = [0u8; 1];
+        getrandom::getrandom(&mut rand_buf)
+            .map_err(|e| Error::RustError(format!("Random generation failed: {}", e)))?;
         
         let kv_index = (rand_buf[0] as usize) % kvid_list.len();
-        proxyip = kvid_list[kv_index].clone();
+        let selected_country = kvid_list[kv_index];
         
-        if let Some(proxy_list) = proxy_kv.get(&proxyip) {
-            if !proxy_list.is_empty() {
-                let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
-                proxyip = proxy_list[proxyip_index].clone().replace(":", "-");
-            } else {
-                console_error!("[ERROR] No proxies for: {}", &proxyip);
+        if let Some(proxy_list) = proxy_kv.get(selected_country) {
+            if proxy_list.is_empty() {
                 return Response::error("No proxies available", 502);
             }
+            let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
+            proxyip = proxy_list[proxyip_index].replace(':', "-");
         } else {
-            console_error!("[ERROR] Country code not found: {}", &proxyip);
             return Response::error("Invalid country code", 400);
         }
     }
 
-    // Parse IP-PORT format (e.g., "1.2.3.4-443")
+    // Fast path: Parse IP-PORT format (e.g., "1.2.3.4-443")
     if is_proxyip_format(&proxyip) {
+        // Use split_once for zero-allocation parsing
         if let Some((addr, port_str)) = proxyip.split_once('-') {
             if let Ok(port) = port_str.parse() {
                 cx.data.proxy_addr = addr.to_string();
@@ -248,85 +205,68 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
         }
     }
 
-    let upgrade = match req.headers().get("Upgrade") {
-        Ok(Some(val)) => val,
-        Ok(None) => String::new(),
-        Err(e) => {
-            console_error!("[ERROR] Failed to read Upgrade header: {}", e);
-            return Response::error("Invalid request headers", 400);
-        }
-    };
+    // Fast header check with early return
+    let is_websocket = req.headers()
+        .get("Upgrade")
+        .ok()
+        .flatten()
+        .map(|v| v == "websocket")
+        .unwrap_or(false);
     
-    if upgrade == "websocket".to_string() {
-        let WebSocketPair { server, client } = match WebSocketPair::new() {
-            Ok(pair) => pair,
-            Err(e) => {
-                console_error!("[ERROR] Failed to create WebSocket pair: {}", e);
-                return Response::error("WebSocket initialization failed", 500);
-            }
-        };
-        
-        let config = cx.data.clone();
-        
-        wasm_bindgen_futures::spawn_local(async move {
-            use gloo_timers::future::TimeoutFuture;
+    if !is_websocket {
+        return Response::from_html("hi from wasm!");
+    }
+    
+    // WebSocket handshake - moved after all validation
+    let WebSocketPair { server, client } = WebSocketPair::new()
+        .map_err(|e| Error::RustError(format!("WebSocket init failed: {}", e)))?;
+    
+    let config = cx.data.clone();
+    
+    wasm_bindgen_futures::spawn_local(async move {
+        use gloo_timers::future::TimeoutFuture;
 
-            if let Err(e) = server.accept() {
-                console_error!("[ERROR] WebSocket accept failed: {}", e);
+        if let Err(e) = server.accept() {
+            console_error!("[ERROR] WebSocket accept failed: {}", e);
+            return;
+        }
+
+        let events = match server.events() {
+            Ok(ev) => ev,
+            Err(e) => {
+                console_error!("[ERROR] WebSocket events failed: {}", e);
+                let _ = server.close(Some(1011), Some("Event stream error".to_string()));
                 return;
             }
+        };
 
-            let events = match server.events() {
-                Ok(ev) => ev,
+        let process_future = async {
+            match ProxyStream::new(config, &server, events).process().await {
+                Ok(_) => console_log!("[DEBUG] Stream completed successfully"),
                 Err(e) => {
-                    console_error!("[ERROR] WebSocket events failed: {}", e);
-                    let _ = server.close(Some(1011), Some("Event stream error".to_string()));
-                    return;
-                }
-            };
-
-            let process_future = async {
-                match ProxyStream::new(config, &server, events).process().await {
-                    Ok(_) => {
-                        console_log!("[DEBUG] Stream completed successfully");
-                    }
-                    Err(e) => {
-                        let error_msg = e.to_string();
-                        if !is_benign_error(&error_msg) {
-                            console_error!("[ERROR] Stream processing failed: {}", error_msg);
-                        }
-                    }
-                }
-            };
-
-            // VIDEO STREAMING: 60-second timeout (increased from 15s)
-            let timeout = TimeoutFuture::new(60_000);
-            futures_util::pin_mut!(process_future);
-            
-            match futures_util::future::select(process_future, timeout).await {
-                futures_util::future::Either::Left(_) => {
-                    if let Err(e) = server.close(Some(1000), Some("Normal closure".to_string())) {
-                        if !is_benign_error(&e.to_string()) {
-                            console_log!("[WARN] WebSocket close failed: {}", e);
-                        }
-                    }
-                },
-                futures_util::future::Either::Right(_) => {
-                    console_log!("[DEBUG] WebSocket timeout after 60s");
-                    if let Err(e) = server.close(Some(1000), Some("Timeout".to_string())) {
-                        if !is_benign_error(&e.to_string()) {
-                            console_log!("[WARN] WebSocket timeout close failed: {}", e);
-                        }
+                    let error_msg = e.to_string();
+                    if !is_benign_error(&error_msg) {
+                        console_error!("[ERROR] Stream processing failed: {}", error_msg);
                     }
                 }
             }
-        });
+        };
 
-        Response::from_websocket(client).or_else(|e| {
-            console_error!("[ERROR] WebSocket handshake failed: {}", e);
-            Response::error("WebSocket handshake failed", 400)
-        })
-    } else {
-        Response::from_html("hi from wasm!")
-    }
+        // 60-second timeout for video streaming
+        let timeout = TimeoutFuture::new(60_000);
+        futures_util::pin_mut!(process_future);
+        
+        match futures_util::future::select(process_future, timeout).await {
+            futures_util::future::Either::Left(_) => {
+                let _ = server.close(Some(1000), Some("Normal closure".to_string()));
+            },
+            futures_util::future::Either::Right(_) => {
+                console_log!("[DEBUG] WebSocket timeout after 60s");
+                let _ = server.close(Some(1000), Some("Timeout".to_string()));
+            }
+        }
+    });
+
+    Response::from_websocket(client)
+        .map_err(|e| Error::RustError(format!("WebSocket handshake failed: {}", e)))
 }
