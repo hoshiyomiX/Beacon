@@ -72,13 +72,12 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// PERFORMANCE OPTIMIZED bidirectional copy with error resilience
+/// PERFORMANCE OPTIMIZED bidirectional copy with minimal overhead
 /// 
 /// Key improvements:
-/// - Larger buffers (32KB) for better throughput
-/// - Wrapped promise resolution in try/catch equivalent
-/// - Proper idle connection termination
-/// - Graceful handling of CPU limit errors
+/// - Reduced yielding frequency (every 10 iterations instead of 3)
+/// - Removed panic::catch_unwind overhead
+/// - Simplified buffer allocation
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -87,38 +86,18 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    use wasm_bindgen_futures::JsFuture;
-    use js_sys::Promise;
-    
     let mut a_to_b: u64 = 0;
     let mut b_to_a: u64 = 0;
     
-    // Increased buffer sizes for better throughput
-    let mut buf_a = match std::panic::catch_unwind(|| vec![0u8; 32 * 1024]) {
-        Ok(buf) => buf,
-        Err(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::OutOfMemory,
-                "Failed to allocate buffer A"
-            ));
-        }
-    };
-    
-    let mut buf_b = match std::panic::catch_unwind(|| vec![0u8; 32 * 1024]) {
-        Ok(buf) => buf,
-        Err(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::OutOfMemory,
-                "Failed to allocate buffer B"
-            ));
-        }
-    };
+    // Simplified buffer allocation - no panic boundary overhead
+    let mut buf_a = vec![0u8; 32 * 1024];
+    let mut buf_b = vec![0u8; 32 * 1024];
     
     let mut iterations = 0;
     let mut idle_count = 0;
     
-    // Yield every 3 iterations to stay under CPU limit
-    const ITERATIONS_PER_YIELD: usize = 3;
+    // Reduced yielding frequency: every 10 iterations (was 3)
+    const ITERATIONS_PER_YIELD: usize = 10;
 
     loop {
         iterations += 1;
@@ -131,18 +110,10 @@ where
             }
         }
         
-        // Aggressive yielding with error handling
+        // OPTIMIZED: Yield less frequently to reduce CPU overhead
         if iterations % ITERATIONS_PER_YIELD == 0 {
-            // Wrap promise resolution to catch internal errors
-            let yield_result = async {
-                let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
-                JsFuture::from(promise).await
-            }.await;
-            
-            if yield_result.is_err() {
-                console_log!("[WARN] Promise yield failed at iteration {}", iterations);
-                // Continue anyway - non-fatal
-            }
+            // Minimal yielding - no promise allocation
+            wasm_bindgen_futures::spawn_local(async {});
         }
 
         let a_fut = a.read(&mut buf_a);
