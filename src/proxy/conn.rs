@@ -9,11 +9,11 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-// OPTIMIZED FOR STABILITY: Conservative settings to prevent internal errors
-static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16KB chunks - prevents OOM
-static MAX_BUFFER_SIZE: usize = 32 * 1024;    // 32KB buffer - conservative
-static MAX_TRANSFER_ITERATIONS: usize = 200;  // Higher limit for video streams
-static MAX_IDLE_ITERATIONS: usize = 15;       // Prevent infinite loops
+// OPTIMIZED FOR PERFORMANCE: Increased buffer sizes for better throughput
+static MAX_WEBSOCKET_SIZE: usize = 32 * 1024; // 32KB chunks - improved performance
+static MAX_BUFFER_SIZE: usize = 64 * 1024;    // 64KB buffer - better for video/large files
+static MAX_TRANSFER_ITERATIONS: usize = 500;  // Higher limit for long-running transfers
+static MAX_IDLE_ITERATIONS: usize = 30;       // Increased stability margin
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -72,10 +72,10 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// STABILITY OPTIMIZED bidirectional copy with error resilience
+/// PERFORMANCE OPTIMIZED bidirectional copy with error resilience
 /// 
 /// Key improvements:
-/// - Smaller buffers (16KB) to prevent OOM
+/// - Larger buffers (32KB) for better throughput
 /// - Wrapped promise resolution in try/catch equivalent
 /// - Proper idle connection termination
 /// - Graceful handling of CPU limit errors
@@ -93,8 +93,8 @@ where
     let mut a_to_b: u64 = 0;
     let mut b_to_a: u64 = 0;
     
-    // Conservative buffer sizes to prevent OOM
-    let mut buf_a = match std::panic::catch_unwind(|| vec![0u8; 16 * 1024]) {
+    // Increased buffer sizes for better throughput
+    let mut buf_a = match std::panic::catch_unwind(|| vec![0u8; 32 * 1024]) {
         Ok(buf) => buf,
         Err(_) => {
             return Err(std::io::Error::new(
@@ -104,7 +104,7 @@ where
         }
     };
     
-    let mut buf_b = match std::panic::catch_unwind(|| vec![0u8; 16 * 1024]) {
+    let mut buf_b = match std::panic::catch_unwind(|| vec![0u8; 32 * 1024]) {
         Ok(buf) => buf,
         Err(_) => {
             return Err(std::io::Error::new(
