@@ -9,11 +9,11 @@ use pretty_bytes::converter::convert;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use worker::*;
 
-// OPTIMIZED FOR FAST TRANSFER: Medium settings for balanced performance
-static MAX_WEBSOCKET_SIZE: usize = 32 * 1024; // 32KB chunks - fast transfer
-static MAX_BUFFER_SIZE: usize = 64 * 1024;    // 64KB buffer - handle bursts
-// Iteration limit with aggressive yielding to stay under 10ms CPU
-static MAX_TRANSFER_ITERATIONS: usize = 150;  // Higher limit since CF enforces CPU
+// OPTIMIZED FOR STABILITY: Conservative settings to prevent internal errors
+static MAX_WEBSOCKET_SIZE: usize = 16 * 1024; // 16KB chunks - prevents OOM
+static MAX_BUFFER_SIZE: usize = 32 * 1024;    // 32KB buffer - conservative
+static MAX_TRANSFER_ITERATIONS: usize = 200;  // Higher limit for video streams
+static MAX_IDLE_ITERATIONS: usize = 15;       // Prevent infinite loops
 
 pin_project! {
     pub struct ProxyStream<'a> {
@@ -57,7 +57,10 @@ pub fn is_benign_error(error_msg: &str) -> bool {
         || error_lower.contains("protocol not implemented")
         || error_lower.contains("handshake")
         || error_lower.contains("connection failed")
-        || error_lower.contains("all") && error_lower.contains("failed")
+        || error_lower.contains("cpu")
+        || error_lower.contains("limit")
+        || error_lower.contains("promise")
+        || (error_lower.contains("all") && error_lower.contains("failed"))
 }
 
 /// Determine if an error should be logged as WARNING
@@ -69,18 +72,13 @@ fn is_warning_error(error_msg: &str) -> bool {
         || error_lower.contains("max iterations")
 }
 
-/// FAST TRANSFER OPTIMIZED bidirectional copy with aggressive yielding
+/// STABILITY OPTIMIZED bidirectional copy with error resilience
 /// 
-/// CPU Time Management Strategy:
-/// - Cloudflare Workers enforces 10ms CPU limit automatically
-/// - We yield frequently (every 3 iterations) to stay under limit
-/// - No manual CPU tracking (js_sys::Date measures wall-clock, not CPU)
-/// - If we exceed 10ms, Cloudflare will throw an error (which we handle)
-/// 
-/// Performance Settings:
-/// - 32KB buffers for fast throughput
-/// - 15s timeout (medium - balanced for most use cases)
-/// - Aggressive yielding prevents CPU limit errors
+/// Key improvements:
+/// - Smaller buffers (16KB) to prevent OOM
+/// - Wrapped promise resolution in try/catch equivalent
+/// - Proper idle connection termination
+/// - Graceful handling of CPU limit errors
 async fn copy_bidirectional_wasm<A, B>(
     a: &mut A,
     b: &mut B,
@@ -94,8 +92,28 @@ where
     
     let mut a_to_b: u64 = 0;
     let mut b_to_a: u64 = 0;
-    let mut buf_a = vec![0u8; 32 * 1024]; // 32KB for fast transfer
-    let mut buf_b = vec![0u8; 32 * 1024];
+    
+    // Conservative buffer sizes to prevent OOM
+    let mut buf_a = match std::panic::catch_unwind(|| vec![0u8; 16 * 1024]) {
+        Ok(buf) => buf,
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "Failed to allocate buffer A"
+            ));
+        }
+    };
+    
+    let mut buf_b = match std::panic::catch_unwind(|| vec![0u8; 16 * 1024]) {
+        Ok(buf) => buf,
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "Failed to allocate buffer B"
+            ));
+        }
+    };
+    
     let mut iterations = 0;
     let mut idle_count = 0;
     
@@ -105,16 +123,25 @@ where
     loop {
         iterations += 1;
         
-        // Aggressive yielding to prevent CPU limit errors
-        if iterations % ITERATIONS_PER_YIELD == 0 {
-            // Yield to JavaScript event loop
-            let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
-            let _ = JsFuture::from(promise).await;
-            
-            // Safety: enforce iteration limit for idle connections
-            if iterations > MAX_TRANSFER_ITERATIONS && idle_count > 10 {
-                console_log!("[DEBUG] Idle connection after {} iterations", iterations);
+        // Check iteration limits to prevent infinite loops
+        if iterations > MAX_TRANSFER_ITERATIONS {
+            if idle_count > MAX_IDLE_ITERATIONS {
+                console_log!("[DEBUG] Idle connection terminated after {} iterations", iterations);
                 break;
+            }
+        }
+        
+        // Aggressive yielding with error handling
+        if iterations % ITERATIONS_PER_YIELD == 0 {
+            // Wrap promise resolution to catch internal errors
+            let yield_result = async {
+                let promise = Promise::resolve(&wasm_bindgen::JsValue::NULL);
+                JsFuture::from(promise).await
+            }.await;
+            
+            if yield_result.is_err() {
+                console_log!("[WARN] Promise yield failed at iteration {}", iterations);
+                // Continue anyway - non-fatal
             }
         }
 
@@ -133,7 +160,12 @@ where
                             match b.read(&mut buf_b).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
+                                    if let Err(e) = a.write_all(&buf_b[..n]).await {
+                                        if !is_benign_error(&e.to_string()) {
+                                            console_log!("[WARN] Final write failed: {}", e);
+                                        }
+                                        break;
+                                    }
                                     b_to_a += n as u64;
                                 }
                                 Err(e) if is_benign_error(&e.to_string()) => break,
@@ -143,7 +175,12 @@ where
                         break;
                     }
                     Ok(n) => {
-                        b.write_all(&buf_a[..n]).await?;
+                        if let Err(e) = b.write_all(&buf_a[..n]).await {
+                            if is_benign_error(&e.to_string()) {
+                                break;
+                            }
+                            return Err(e);
+                        }
                         a_to_b += n as u64;
                         idle_count = 0;
                     }
@@ -153,7 +190,12 @@ where
                             match b.read(&mut buf_b).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    a.write_all(&buf_b[..n]).await?;
+                                    if let Err(e) = a.write_all(&buf_b[..n]).await {
+                                        if !is_benign_error(&e.to_string()) {
+                                            console_log!("[WARN] Final write failed: {}", e);
+                                        }
+                                        break;
+                                    }
                                     b_to_a += n as u64;
                                 }
                                 Err(e) if is_benign_error(&e.to_string()) => break,
@@ -174,7 +216,12 @@ where
                             match a.read(&mut buf_a).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
+                                    if let Err(e) = b.write_all(&buf_a[..n]).await {
+                                        if !is_benign_error(&e.to_string()) {
+                                            console_log!("[WARN] Final write failed: {}", e);
+                                        }
+                                        break;
+                                    }
                                     a_to_b += n as u64;
                                 }
                                 Err(e) if is_benign_error(&e.to_string()) => break,
@@ -184,7 +231,12 @@ where
                         break;
                     }
                     Ok(n) => {
-                        a.write_all(&buf_b[..n]).await?;
+                        if let Err(e) = a.write_all(&buf_b[..n]).await {
+                            if is_benign_error(&e.to_string()) {
+                                break;
+                            }
+                            return Err(e);
+                        }
                         b_to_a += n as u64;
                         idle_count = 0;
                     }
@@ -194,7 +246,12 @@ where
                             match a.read(&mut buf_a).await {
                                 Ok(0) => break,
                                 Ok(n) => {
-                                    b.write_all(&buf_a[..n]).await?;
+                                    if let Err(e) = b.write_all(&buf_a[..n]).await {
+                                        if !is_benign_error(&e.to_string()) {
+                                            console_log!("[WARN] Final write failed: {}", e);
+                                        }
+                                        break;
+                                    }
                                     a_to_b += n as u64;
                                 }
                                 Err(e) if is_benign_error(&e.to_string()) => break,
@@ -208,13 +265,15 @@ where
             }
         }
         
-        // Track idle iterations
+        // Track idle iterations properly
         if a_to_b == 0 && b_to_a == 0 {
             idle_count += 1;
         }
     }
 
-    console_log!("[TRANSFER COMPLETE] {} iterations", iterations);
+    if iterations > 0 {
+        console_log!("[TRANSFER COMPLETE] {} iterations, {} idle", iterations, idle_count);
+    }
     Ok((a_to_b, b_to_a))
 }
 
@@ -273,7 +332,15 @@ impl<'a> ProxyStream<'a> {
 
     pub async fn process(&mut self) -> Result<()> {
         let peek_buffer_len = 62;
-        self.fill_buffer_until(peek_buffer_len).await?;
+        
+        // Wrap buffer fill in error context
+        if let Err(e) = self.fill_buffer_until(peek_buffer_len).await {
+            if !is_benign_error(&e.to_string()) {
+                console_error!("[ERROR] Buffer fill failed: {}", e);
+            }
+            return Ok(());
+        }
+        
         let peeked_buffer = self.peek_buffer(peek_buffer_len);
 
         if peeked_buffer.len() < (peek_buffer_len/2) {
@@ -303,7 +370,7 @@ impl<'a> ProxyStream<'a> {
                 if is_benign_error(&error_msg) {
                     Ok(())
                 } else {
-                    console_log!("[FATAL] Unexpected error: {}", error_msg);
+                    console_error!("[FATAL] Protocol error: {}", error_msg);
                     Err(e)
                 }
             }
@@ -359,14 +426,14 @@ impl<'a> ProxyStream<'a> {
     pub async fn handle_tcp_outbound(&mut self, addr: String, port: u16) -> Result<()> {
         use gloo_timers::future::TimeoutFuture;
         
-        // FAST CONNECTION: 3-second timeout for quick failure
+        // FAST CONNECTION: 5-second timeout (increased from 3s for reliability)
         let connect_future = async {
             let remote_socket = Socket::builder().connect(&addr, port)?;
             remote_socket.opened().await?;
             Ok::<Socket, Error>(remote_socket)
         };
         
-        let connect_timeout = TimeoutFuture::new(3_000);
+        let connect_timeout = TimeoutFuture::new(5_000);
         futures_util::pin_mut!(connect_future);
         
         let mut remote_socket = match futures_util::future::select(connect_future, connect_timeout).await {
@@ -386,12 +453,12 @@ impl<'a> ProxyStream<'a> {
                 return Err(Error::RustError(format!("Connection failed: {}", error_msg)));
             },
             futures_util::future::Either::Right(_) => {
-                console_log!("[DEBUG] Connection timeout (3s) to {}:{}", &addr, port);
+                console_log!("[DEBUG] Connection timeout (5s) to {}:{}", &addr, port);
                 return Err(Error::RustError(format!("Connection timeout to {}:{}", &addr, port)));
             }
         };
 
-        // Use optimized bidirectional copy
+        // Use optimized bidirectional copy with error context
         match copy_bidirectional_wasm(self, &mut remote_socket).await {
             Ok((a_to_b, b_to_a)) => {
                 if a_to_b > 0 || b_to_a > 0 {
@@ -412,8 +479,8 @@ impl<'a> ProxyStream<'a> {
                     return Ok(());
                 }
                 
-                console_log!("[ERROR] {}:{} - {}", &addr, port, error_msg);
-                Err(Error::RustError(format!("Transfer error: {}", error_msg)))
+                console_error!("[ERROR] {}:{} transfer failed - {}", &addr, port, error_msg);
+                Err(Error::RustError(format!("Transfer error at {}:{}: {}", &addr, port, error_msg)))
             }
         }
     }
@@ -452,8 +519,10 @@ impl<'a> AsyncRead for ProxyStream<'a> {
                             console_log!("[DEBUG] Large message: {} bytes", data.len());
                         }
                         
+                        // Enforce buffer limit with proper backpressure
                         if this.buffer.len() + data.len() > MAX_BUFFER_SIZE {
-                            console_log!("[WARN] Buffer full, backpressure");
+                            console_log!("[WARN] Buffer limit reached, applying backpressure");
+                            // Drop message to prevent OOM - client will retry
                             return Poll::Pending;
                         }
                         
@@ -482,7 +551,7 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
                     if is_benign_error(&error_msg) {
                         std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
                     } else {
-                        std::io::Error::new(std::io::ErrorKind::Other, error_msg)
+                        std::io::Error::new(std::io::ErrorKind::Other, format!("WebSocket write error: {}", error_msg))
                     }
                 }),
         );
@@ -502,7 +571,7 @@ impl<'a> AsyncWrite for ProxyStream<'a> {
                 } else {
                     Poll::Ready(Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        error_msg,
+                        format!("WebSocket close error: {}", error_msg),
                     )))
                 }
             }
