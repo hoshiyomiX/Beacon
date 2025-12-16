@@ -5,7 +5,6 @@ mod proxy;
 use crate::config::Config;
 use crate::proxy::*;
 
-use std::collections::HashMap;
 use uuid::Uuid;
 use worker::*;
 
@@ -57,13 +56,6 @@ fn is_proxyip_format(s: &str) -> bool {
         if !b.is_ascii_digit() { return false; }
     }
     true
-}
-
-/// Fast country code validation (2 uppercase letters)
-#[inline(always)]
-fn is_country_code_format(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_uppercase() && bytes[1].is_ascii_uppercase()
 }
 
 #[event(fetch)]
@@ -162,41 +154,10 @@ async fn tunnel_inner(req: Request, cx: &mut RouteContext<Config>) -> Result<Res
     let proxyip_param = cx.param("proxyip")
         .ok_or_else(|| Error::RustError("Missing proxyip parameter".to_string()))?;
     
-    let mut proxyip = proxyip_param.to_string();
-    
-    // KV-based proxy selection (lazy-loaded only when needed)
-    if is_country_code_format(&proxyip) {
-        let kvid_list: Vec<&str> = proxyip.split(',').collect();
-        
-        // Lazy load PROXY_LIST only for country code requests
-        let proxy_list_json = cx.env.var("PROXY_LIST")
-            .map(|x| x.to_string())
-            .unwrap_or_else(|_| "{}".to_string());
-        
-        let proxy_kv: HashMap<String, Vec<String>> = serde_json::from_str(&proxy_list_json)
-            .map_err(|e| Error::RustError(format!("Invalid PROXY_LIST: {}", e)))?;
-        
-        let mut rand_buf = [0u8; 1];
-        getrandom::getrandom(&mut rand_buf)
-            .map_err(|e| Error::RustError(format!("Random generation failed: {}", e)))?;
-        
-        let kv_index = (rand_buf[0] as usize) % kvid_list.len();
-        let selected_country = kvid_list[kv_index];
-        
-        if let Some(proxy_list) = proxy_kv.get(selected_country) {
-            if proxy_list.is_empty() {
-                return Response::error("No proxies available", 502);
-            }
-            let proxyip_index = (rand_buf[0] as usize) % proxy_list.len();
-            proxyip = proxy_list[proxyip_index].replace(':', "-");
-        } else {
-            return Response::error("Invalid country code", 400);
-        }
-    }
+    let proxyip = proxyip_param.to_string();
 
-    // Fast path: Parse IP-PORT format (e.g., "1.2.3.4-443")
+    // Parse IP-PORT format (e.g., "1.2.3.4-443")
     if is_proxyip_format(&proxyip) {
-        // Use split_once for zero-allocation parsing
         if let Some((addr, port_str)) = proxyip.split_once('-') {
             if let Ok(port) = port_str.parse() {
                 cx.data.proxy_addr = addr.to_string();
